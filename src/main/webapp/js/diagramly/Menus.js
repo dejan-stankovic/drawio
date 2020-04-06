@@ -1,6 +1,6 @@
 /**
- * Copyright (c) 2006-2019, JGraph Ltd
- * Copyright (c) 2006-2019, draw.io AG
+ * Copyright (c) 2006-2020, JGraph Ltd
+ * Copyright (c) 2006-2020, draw.io AG
  */
 (function()
 {
@@ -61,15 +61,14 @@
 		var graph = editorUi.editor.graph;
 		var isGraphEnabled = mxUtils.bind(graph, graph.isEnabled);
 		var googleEnabled = ((urlParams['embed'] != '1' && urlParams['gapi'] != '0') ||
-				(urlParams['embed'] == '1' && urlParams['gapi'] == '1')) && mxClient.IS_SVG &&
-				isLocalStorage && (document.documentMode == null || document.documentMode >= 10);
+			(urlParams['embed'] == '1' && urlParams['gapi'] == '1')) && mxClient.IS_SVG &&
+			isLocalStorage && (document.documentMode == null || document.documentMode >= 10);
 		var dropboxEnabled = ((urlParams['embed'] != '1' && urlParams['db'] != '0') || (urlParams['embed'] == '1' && urlParams['db'] == '1')) &&
 			mxClient.IS_SVG && (document.documentMode == null || document.documentMode > 9);
 		var oneDriveEnabled = (window.location.hostname == 'www.draw.io' || window.location.hostname == 'test.draw.io' ||
-				window.location.hostname == 'drive.draw.io') &&
-				(((urlParams['embed'] != '1' && urlParams['od'] != '0') || (urlParams['embed'] == '1' &&
-				urlParams['od'] == '1')) && !navigator.userAgent.match(/(iPad|iPhone|iPod)/g) &&
-				(navigator.userAgent.indexOf('MSIE') < 0 || document.documentMode >= 10));
+			window.location.hostname == 'drive.draw.io' || window.location.hostname == 'app.diagrams.net') &&
+			(((urlParams['embed'] != '1' && urlParams['od'] != '0') || (urlParams['embed'] == '1' && urlParams['od'] == '1')) &&
+			!mxClient.IS_IOS && (navigator.userAgent.indexOf('MSIE') < 0 || document.documentMode >= 10));
 		var trelloEnabled = ((urlParams['embed'] != '1' && urlParams['tr'] != '0') || (urlParams['embed'] == '1' && urlParams['tr'] == '1')) &&
 			mxClient.IS_SVG && (document.documentMode == null || document.documentMode > 9);
 
@@ -287,13 +286,13 @@
 		
 		editorUi.actions.put('exportPdf', new Action(mxResources.get('formatPdf') + '...', function()
 		{
-			if ((typeof(mxIsElectron5) === 'undefined' || !mxIsElectron5) &&
+			if ((typeof(mxIsElectron) === 'undefined' || !mxIsElectron) &&
 				(editorUi.isOffline() || editorUi.printPdfExport))
 			{
 				// Export PDF action for chrome OS (same as print with different dialog title)
 				editorUi.showDialog(new PrintDialog(editorUi, mxResources.get('formatPdf')).container, 360,
 						(editorUi.pages != null && editorUi.pages.length > 1) ?
-						420 : 360, true, true);
+						450 : 370, true, true);
 			}
 			else
 			{
@@ -319,7 +318,7 @@
 					}
 				};
 				
-				var dlgH = 172;
+				var dlgH = 180;
 				
 				if (editorUi.pdfPageExport && !noPages)
 				{
@@ -350,9 +349,21 @@
 					}
 				}
 				
+				var includeOption = !mxClient.IS_CHROMEAPP && !EditorUi.isElectronApp &&
+					editorUi.getServiceName() == 'draw.io';
+				var include = (includeOption) ? editorUi.addCheckbox(div,
+					mxResources.get('includeCopyOfMyDiagram'), true) : null;
+					
+				if (includeOption)
+				{
+					dlgH += 30;
+				}
+				
 				var dlg = new CustomDialog(editorUi, div, mxUtils.bind(this, function()
 				{
-					editorUi.downloadFile('pdf', null, null, !selection.checked, noPages? true : !allPages.checked, !crop.checked, null, null, null, grid.checked);
+					editorUi.downloadFile('pdf', null, null, !selection.checked,
+						noPages? true : !allPages.checked, !crop.checked, null, null,
+						null, grid.checked, include != null && include.checked);
 				}), null, mxResources.get('export'));
 				editorUi.showDialog(dlg.container, 300, dlgH, true, true);
 			}
@@ -369,6 +380,11 @@
 			
 			function fn()
 			{
+				if (currentFile != null)
+				{
+					currentFile.removeDraft();
+				}
+				
 				editorUi.fileLoaded(null);
 			};
 			
@@ -493,7 +509,38 @@
 		{
 			return autosaveAction.isEnabled() && editorUi.editor.autosave;
 		});
+		
+		var compressedAction = editorUi.actions.addAction('compressed', function()
+		{
+			var file = editorUi.getCurrentFile();
+			
+			if (file != null)
+			{
+				if (file.isCompressed())
+				{
+					file.decompress();
+				}
+				else
+				{
+					file.compress();
+				}
+			}
+		});
+		
+		compressedAction.setToggleAction(true);
+		
+		compressedAction.setSelectedCallback(function()
+		{
+			var file = editorUi.getCurrentFile();
+			
+			return file != null && file.isCompressed();
+		});
 
+		compressedAction.isEnabled = function()
+		{
+			return editorUi.getCurrentFile() != null;
+		}
+		
 		editorUi.actions.addAction('editGeometry...', function()
 		{
 			var cells = graph.getSelectionCells();
@@ -664,19 +711,17 @@
 
 		var showingAbout = false;
 		
-		editorUi.actions.put('about', new Action(mxResources.get('aboutDrawio') + '...', function()
+		editorUi.actions.put('about', new Action(mxResources.get('about') + ' ' + EditorUi.VERSION + '...', function()
 		{
-			if (!showingAbout)
+			if (editorUi.isOffline() || mxClient.IS_CHROMEAPP || EditorUi.isElectronApp)
 			{
-				editorUi.showDialog(new AboutDialog(editorUi).container, 220, 300, true, true, function()
-				{
-					showingAbout = false;
-				});
-				
-				showingAbout = true;
+				editorUi.alert(editorUi.editor.appName + ' ' + EditorUi.VERSION);
 			}
-			
-		}, null, null, 'F1'));
+			else
+			{
+				editorUi.openLink('https://www.diagrams.net/');
+			}
+		}));
 		
 		editorUi.actions.addAction('userManual...', function()
 		{
@@ -685,7 +730,7 @@
 
 		editorUi.actions.addAction('support...', function()
 		{
-			editorUi.openLink('https://about.draw.io/support/');
+			editorUi.openLink('https://github.com/jgraph/drawio/wiki/Getting-Support');
 		});
 
 		editorUi.actions.addAction('exportOptionsDisabled...', function()
@@ -750,7 +795,7 @@
 		{
 			if (this.findWindow == null)
 			{
-				this.findWindow = new FindWindow(editorUi, document.body.offsetWidth - 300, 110, 240, 140);
+				this.findWindow = new FindWindow(editorUi, document.body.offsetWidth - 300, 110, 240, 155);
 				this.findWindow.window.addListener('show', function()
 				{
 					editorUi.fireEvent(new mxEventObject('find'));
@@ -769,17 +814,102 @@
 		}));
 		action.setToggleAction(true);
 		action.setSelectedCallback(mxUtils.bind(this, function() { return this.findWindow != null && this.findWindow.window.isVisible(); }));
-		
+
 		editorUi.actions.put('exportVsdx', new Action(mxResources.get('formatVsdx') + ' (beta)...', function()
 		{
 			editorUi.exportVisio();
 		}));
 		
+		if (isLocalStorage && localStorage != null && urlParams['embed'] != '1')
+		{
+			editorUi.actions.addAction('configuration...', function()
+			{
+				// Add help, link button
+				var value = localStorage.getItem('.configuration');
+				
+		    	var dlg = new TextareaDialog(editorUi, mxResources.get('configuration') + ':',
+		    		(value != null) ? JSON.stringify(JSON.parse(value), null, 2) : '', function(newValue)
+				{
+					if (newValue != null)
+					{
+						try
+						{
+							if (newValue.length > 0)
+							{
+								var obj = JSON.parse(newValue);
+								
+								localStorage.setItem('.configuration', JSON.stringify(obj));
+							}
+							else
+							{
+								localStorage.removeItem('.configuration');
+							}
+
+							editorUi.hideDialog();
+							editorUi.alert(mxResources.get('restartForChangeRequired'));
+						}
+						catch (e)
+						{
+							editorUi.handleError(e);	
+						}
+					}
+				}, null, null, null, null, null, true, null, null,
+					'https://desk.draw.io/support/solutions/articles/16000058316',
+					(EditorUi.isElectronApp) ? null : [[mxResources.get('reset'), function(evt, input)
+					{
+						editorUi.confirm(mxResources.get('areYouSure'), function()
+						{
+							try
+							{
+								localStorage.removeItem('.configuration');
+								localStorage.removeItem('.drawio-config');
+								localStorage.removeItem('.mode');
+								
+								editorUi.hideDialog();
+								editorUi.alert(mxResources.get('restartForChangeRequired'));
+							}
+							catch (e)
+							{
+								editorUi.handleError(e);	
+							}
+						});
+					}], [mxResources.get('link'), function(evt, input)
+					{
+						if (input.value.length > 0)
+						{
+							try
+							{
+								var obj = JSON.parse(input.value);
+								var url = window.location.protocol + '//' + window.location.host +
+									'/' + editorUi.getSearch() + '#_CONFIG_' +
+									Graph.compress(JSON.stringify(obj));
+								var dlg = new EmbedDialog(editorUi, url);
+								editorUi.showDialog(dlg.container, 440, 240, true);
+								dlg.init();
+							}
+							catch (e)
+							{
+								editorUi.handleError(e);	
+							}
+						}
+						else
+						{
+							editorUi.handleError({message: mxResources.get('invalidInput')});
+						}
+					}]]);
+		    	
+		    	dlg.textarea.style.width = '600px';
+		    	dlg.textarea.style.height = '380px';
+				editorUi.showDialog(dlg.container, 620, 460, true, false);
+				dlg.init();
+			});
+		}
+		
 		// Adds language menu to options only if localStorage is available for
 		// storing the choice. We do not want to use cookies for older browsers.
 		// Note that the URL param lang=XX is available for setting the language
 		// in older browsers. URL param has precedence over the saved setting.
-		if (mxClient.IS_CHROMEAPP || (isLocalStorage && urlParams['offline'] != '1'))
+		if (mxClient.IS_CHROMEAPP || isLocalStorage)
 		{
 			this.put('language', new Menu(mxUtils.bind(this, function(menu, parent)
 			{
@@ -919,7 +1049,11 @@
 					catch (e)
 					{
 						editorUi.handleError(e);
-						console.error(e);
+						
+						if (window.console != null)
+						{
+							console.error(e);
+						}
 					}
 				}
 			});
@@ -936,6 +1070,149 @@
 		layoutMenu.funct = function(menu, parent)
 		{
 			layoutMenuFunct.apply(this, arguments);
+			
+			menu.addSeparator(parent);
+		
+			menu.addItem(mxResources.get('orgChart') + '...', null, function()
+			{
+				var branchOptimizer = null, parentChildSpacingVal = 20, siblingSpacingVal = 20, notExecuted = true;
+				
+				// Invoked when orgchart code was loaded
+				var delayed = function()
+				{
+					editorUi.loadingOrgChart = false;
+					editorUi.spinner.stop();
+					
+					if (typeof mxOrgChartLayout !== 'undefined' && branchOptimizer != null && notExecuted)
+					{
+						var graph = editorUi.editor.graph;
+						var orgChartLayout = new mxOrgChartLayout(graph, branchOptimizer, parentChildSpacingVal, siblingSpacingVal);
+						orgChartLayout.execute(graph.getDefaultParent());
+						notExecuted = false;
+					}
+				};
+				
+				// Invoked from dialog
+				function doLayout()
+				{
+					if (typeof mxOrgChartLayout === 'undefined' && !editorUi.loadingOrgChart && !editorUi.isOffline(true))
+					{
+						if (editorUi.spinner.spin(document.body, mxResources.get('loading')))
+						{
+							editorUi.loadingOrgChart = true;
+							
+							if (urlParams['dev'] == '1')
+							{
+								mxscript('js/orgchart.min.js', delayed);
+							}
+							else
+							{
+								mxscript('js/extensions.min.js', delayed);
+							}
+						}
+					}
+					else
+					{
+						delayed();
+					}
+				};
+
+				var div = document.createElement('div');
+				
+				var title = document.createElement('div');
+				title.style.marginTop = '6px';
+				title.style.display = 'inline-block';
+				title.style.width = '140px';
+				mxUtils.write(title, mxResources.get('orgChartType') + ': ');
+				
+				div.appendChild(title);
+				
+				var typeSelect = document.createElement('select');
+				typeSelect.style.width = '200px';
+				typeSelect.style.boxSizing = 'border-box';
+				
+				//Types are hardcoded here since the code is not loaded yet
+				var typesArr = [mxResources.get('linear'),
+					mxResources.get('hanger2'),
+					mxResources.get('hanger4'),
+					mxResources.get('fishbone1'),
+					mxResources.get('fishbone2'),
+					mxResources.get('1ColumnLeft'),
+					mxResources.get('1ColumnRight'),
+					mxResources.get('smart')
+				];
+				
+				for (var i = 0; i < typesArr.length; i++)
+				{
+					var option = document.createElement('option');
+					mxUtils.write(option, typesArr[i]);
+					option.value = i;
+					
+					if (i == 2)
+					{
+						option.setAttribute('selected', 'selected');
+					}
+					
+					typeSelect.appendChild(option);
+				}
+					
+				mxEvent.addListener(typeSelect, 'change', function()
+				{
+					branchOptimizer = typeSelect.value;
+				});
+				
+				div.appendChild(typeSelect);
+				
+				title = document.createElement('div');
+				title.style.marginTop = '6px';
+				title.style.display = 'inline-block';
+				title.style.width = '140px';
+				mxUtils.write(title, mxResources.get('parentChildSpacing') + ': ');
+				div.appendChild(title);
+				
+				var parentChildSpacing = document.createElement('input');
+				parentChildSpacing.type = 'number';
+				parentChildSpacing.value = parentChildSpacingVal;
+				parentChildSpacing.style.width = '200px';
+				parentChildSpacing.style.boxSizing = 'border-box';
+				div.appendChild(parentChildSpacing);
+				
+				mxEvent.addListener(parentChildSpacing, 'change', function()
+				{
+					parentChildSpacingVal = parentChildSpacing.value;
+				});
+				
+				title = document.createElement('div');
+				title.style.marginTop = '6px';
+				title.style.display = 'inline-block';
+				title.style.width = '140px';
+				mxUtils.write(title, mxResources.get('siblingSpacing') + ': ');
+				div.appendChild(title);
+				
+				var siblingSpacing = document.createElement('input');
+				siblingSpacing.type = 'number';
+				siblingSpacing.value = siblingSpacingVal;
+				siblingSpacing.style.width = '200px';
+				siblingSpacing.style.boxSizing = 'border-box';
+				div.appendChild(siblingSpacing);
+				
+				mxEvent.addListener(siblingSpacing, 'change', function()
+				{
+					siblingSpacingVal = siblingSpacing.value;
+				});
+				
+				var dlg = new CustomDialog(editorUi, div, function()
+				{
+					if (branchOptimizer == null)
+					{
+						branchOptimizer = 2;
+					}
+					
+					doLayout();
+				});
+				
+				editorUi.showDialog(dlg.container, 355, 125, true, true);
+			}, parent, null, isGraphEnabled());
 			
 			menu.addSeparator(parent);
 			editorUi.menus.addMenuItem(menu, 'runLayout', parent, null, null, mxResources.get('apply') + '...');
@@ -1007,26 +1284,8 @@
 					input.focus();
 				}, 0);
 				
-				this.addMenuItems(menu, ['-', 'quickStart', 'userManual', 'keyboardShortcuts', '-'], parent);
-				
-				if (!mxClient.IS_CHROMEAPP)
-				{
-					this.addMenuItems(menu, ['feedback'], parent);
-				}
-
-				this.addMenuItems(menu, ['support', '-'], parent);
-				
-				if (!EditorUi.isElectronApp && !navigator.standalone && urlParams['embed'] != '1')
-				{
-					this.addMenuItems(menu, ['downloadDesktop'], parent);
-				}
-				
-				if (!navigator.standalone && urlParams['embed'] != '1')
-				{
-					this.addMenuItems(menu, ['useOffline'], parent);
-				}
-				
-				this.addMenuItems(menu, ['-', 'about'], parent);
+				this.addMenuItems(menu, ['-', 'keyboardShortcuts', 'quickStart',
+					'-', 'userManual', 'support', '-', 'about'], parent);
 			}
 			
 			if (urlParams['test'] == '1')
@@ -1222,7 +1481,11 @@
 						catch (e)
 						{
 							editorUi.handleError(e);
-							console.error(e);
+							
+							if (window.console != null)
+							{
+								console.error(e);
+							}
 						}
 					}
 				});
@@ -1252,7 +1515,11 @@
 							catch (e)
 							{
 								editorUi.handleError(e);
-								console.error(e);
+								
+								if (window.console != null)
+								{
+									console.error(e);
+								}
 							}
 						}
 					});
@@ -1345,7 +1612,7 @@
 						{
 							// LATER: Download full model dump with history
 							var req = new mxXmlRequest('https://www.googleapis.com/drive/v2/files/' +
-									fileId + '/realtime?supportsTeamDrives=true', null, 'GET');
+									fileId + '/realtime?supportsAllDrives=true', null, 'GET');
 	
 							// Adds auth token
 							req.setRequestHeaders = function(request)
@@ -1907,6 +2174,10 @@
 				{
 					mime = 'image/gif';
 				}
+				else if (/\.pdf$/i.test(filename))
+				{
+					mime = 'application/pdf';
+				}
 				
 				return mime;
 			});
@@ -2349,7 +2620,8 @@
 			{
 				menu.addItem(title, null, mxUtils.bind(this, function()
 				{
-					if (method == 'fromText' || method == 'formatSql' || method == 'plantUml')
+					if (method == 'fromText' || method == 'formatSql' ||
+						method == 'plantUml' || method == 'mermaid')
 					{
 						var dlg = new ParseDialog(editorUi, title, method);
 						editorUi.showDialog(dlg.container, 620, 420, true, false);
@@ -2392,6 +2664,15 @@
     		{
     	        graph.startEditing(cell);
     		}
+    		
+    		// Async call is workaroun for touch events resetting hover icons
+    		window.setTimeout(function()
+    		{
+	    		if (editorUi.hoverIcons != null)
+				{
+					editorUi.hoverIcons.update(graph.view.getState(cell));
+				}
+    		}, 0);
     		
 	    	return cell;
 		};
@@ -2460,18 +2741,19 @@
 				}
 			}
 		});
-
+		
 		this.put('insert', new Menu(mxUtils.bind(this, function(menu, parent)
 		{
-			this.addMenuItems(menu, ['insertRectangle', 'insertEllipse', 'insertRhombus', '-',
-				'insertText', 'insertLink', '-', 'insertImage'], parent);
+			this.addMenuItems(menu, ['insertRectangle', 'insertEllipse',
+				'insertRhombus', '-', 'insertText', 'insertLink', '-',
+				'createShape', 'insertFreehand', '-', 'insertImage'], parent);
 
 			if (editorUi.insertTemplateEnabled && !editorUi.isOffline())
 			{
-				this.addMenuItems(menu, ['insertTemplate', '-'], parent);
+				this.addMenuItems(menu, ['insertTemplate'], parent);
 			}
-
-			this.addMenuItems(menu, ['createShape', 'insertFreehand', '-'], parent);
+			
+			menu.addSeparator(parent);
 			this.addSubmenu('insertLayout', menu, parent, mxResources.get('layout'));
 			this.addSubmenu('insertAdvanced', menu, parent, mxResources.get('advanced'));
 		})));
@@ -2484,7 +2766,7 @@
 
         this.put('insertAdvanced', new Menu(mxUtils.bind(this, function(menu, parent)
         {
-			addInsertMenuItems(menu, parent, ['fromText', 'plantUml', '-', 'formatSql']);
+			addInsertMenuItems(menu, parent, ['fromText', 'plantUml', 'mermaid', '-', 'formatSql']);
 			
 			menu.addItem(mxResources.get('csv') + '...', null, function()
 			{
@@ -2926,7 +3208,14 @@
 		// Overrides edit menu to add find and editGeometry
 		this.put('edit', new Menu(mxUtils.bind(this, function(menu, parent)
 		{
-			this.addMenuItems(menu, ['undo', 'redo', '-', 'cut', 'copy', 'paste', 'delete', '-', 'duplicate', '-',
+			this.addMenuItems(menu, ['undo', 'redo', '-', 'cut', 'copy']);
+			
+			if (mxIsElectron)
+			{
+				this.addMenuItems(menu, ['copyAsImage']);
+			}
+			
+			this.addMenuItems(menu, ['paste', 'delete', '-', 'duplicate', '-',
 									 'find', '-', 'editData', 'editTooltip', '-', 'editStyle', 'editGeometry', '-',
 			                         'edit', '-', 'editLink', 'openLink', '-',
 			                         'selectVertices', 'selectEdges', 'selectAll', 'selectNone', '-', 'lockUnlock']);
@@ -3030,8 +3319,6 @@
 				this.addSubmenu('theme', menu, parent);
 				menu.addSeparator(parent);
 			}
-			
-			this.addMenuItems(menu, ['copyConnect', 'collapseExpand', '-'], parent);
 
 			if (typeof(MathJax) !== 'undefined')
 			{
@@ -3043,27 +3330,26 @@
 				}
 			}
 			
-			if (urlParams['embed'] != '1')
-			{
-				this.addMenuItems(menu, ['autosave'], parent);
-			}
-
-			this.addMenuItems(menu, ['-', 'editDiagram'], parent);
-
-			menu.addSeparator(parent);
+			this.addMenuItems(menu, ['copyConnect', 'collapseExpand', '-'], parent);
 			
 			if (urlParams['embed'] != '1' && (isLocalStorage || mxClient.IS_CHROMEAPP))
 			{
 				this.addMenuItems(menu, ['showStartScreen'], parent);
 			}
 
+			if (urlParams['embed'] != '1')
+			{
+				this.addMenuItems(menu, ['autosave', 'compressed'], parent);
+			}
+			
+			menu.addSeparator(parent);
+			
 			if (!editorUi.isOfflineApp() && isLocalStorage)
 			{
 				this.addMenuItem(menu, 'plugins', parent);
 			}
 
-			menu.addSeparator(parent);
-			this.addMenuItem(menu, 'tags', parent);
+			this.addMenuItems(menu, ['tags', '-', 'editDiagram', '-', 'configuration'], parent);
 			
 			// Adds trailing separator in case new plugin entries are added
 			menu.addSeparator(parent);
@@ -3140,9 +3426,9 @@
 					this.addMenuItems(menu, ['-', 'revisionHistory'], parent);
 				}
 				
-				this.addMenuItems(menu, ['-', 'pageSetup', 'print', '-', 'rename', 'save'], parent);
+				this.addMenuItems(menu, ['-', 'pageSetup', 'print', '-', 'rename', urlParams['noSaveBtn'] == '1'? 'saveAndExit' : 'save'], parent);
 				
-				if (urlParams['saveAndExit'] == '1')
+				if (urlParams['saveAndExit'] == '1' && urlParams['noSaveBtn'] != '1')
 				{
 					this.addMenuItems(menu, ['saveAndExit'], parent);
 				}
@@ -3248,6 +3534,271 @@
 				
 				this.addMenuItems(menu, ['-', 'close']);
 			}
+		})));
+		
+		/**
+		 * External Fonts undoable change
+		 */
+		function ChangeExtFonts(ui, extFonts, customFonts)
+		{
+			this.ui = ui;
+			this.extFonts = extFonts;
+			this.previousExtFonts = extFonts;
+			this.customFonts = customFonts;
+			this.prevCustomFonts = customFonts;
+		};
+
+		/**
+		 * Implementation of the undoable External Fonts Change.
+		 */
+		ChangeExtFonts.prototype.execute = function()
+		{
+			var graph = this.ui.editor.graph;
+			
+			
+			this.customFonts = this.prevCustomFonts;
+			this.prevCustomFonts = this.ui.menus.customFonts;
+			this.ui.fireEvent(new mxEventObject('customFontsChanged', 'customFonts', this.customFonts));
+			
+			this.extFonts = this.previousExtFonts;
+			var tmp = graph.extFonts;
+			
+			for (var i = 0; tmp != null && i < tmp.length; i++)
+			{
+				var fontElem = document.getElementById('extFont_' + tmp[i].name);
+				
+				if (fontElem != null)
+				{
+					fontElem.parentNode.removeChild(fontElem);
+				}
+			}
+			
+			graph.extFonts = [];
+			
+			for (var i = 0; this.previousExtFonts != null && i < this.previousExtFonts.length; i++)
+			{
+				this.ui.editor.graph.addExtFont(this.previousExtFonts[i].name, this.previousExtFonts[i].url);
+			}
+			
+			this.previousExtFonts = tmp;
+		};
+
+		//Replace the default font family menu
+		this.put('fontFamily', new Menu(mxUtils.bind(this, function(menu, parent)
+		{
+			var addItem = mxUtils.bind(this, function(fontname, fontUrl, deletable)
+			{
+				var graph = this.editorUi.editor.graph;
+				
+				var tr = this.styleChange(menu, fontname, [mxConstants.STYLE_FONTFAMILY], [fontname], null, parent, function()
+				{
+					document.execCommand('fontname', false, fontname);
+					//Add the font to the file in case it was a previous font from the settings
+					graph.addExtFont(fontname, fontUrl);
+				}, function()
+				{
+					graph.updateLabelElements(graph.getSelectionCells(), function(elt)
+					{
+						elt.removeAttribute('face');
+						elt.style.fontFamily = null;
+						
+						if (elt.nodeName == 'PRE')
+						{
+							graph.replaceElement(elt, 'div');
+						}
+					});
+					
+					//Add the font to the file in case it was a previous font from the settings
+					graph.addExtFont(fontname, fontUrl);
+				});
+				
+				if (deletable)
+				{
+					var img = document.createElement('span');
+					img.className = 'geSprite geSprite-delete';
+					img.style.cursor = 'pointer';
+					img.style.display = 'inline-block';
+					tr.firstChild.nextSibling.nextSibling.appendChild(img);
+					
+					mxEvent.addListener(img, (mxClient.IS_POINTER) ? 'pointerup' : 'mouseup', mxUtils.bind(this, function(evt)
+					{
+						var extFonts = mxUtils.clone(this.editorUi.editor.graph.extFonts);
+						
+						if (extFonts != null && extFonts.length > 0)
+						{
+							for (var i = 0; i < extFonts.length; i++)
+							{
+								if (extFonts[i].name == fontname)
+								{
+									extFonts.splice(i, 1);
+									break;
+								}
+							}
+						}
+						
+						var customFonts = mxUtils.clone(this.customFonts);
+						
+						for (var i = 0; i < customFonts.length; i++)
+						{
+							if (customFonts[i].name == fontname)
+							{
+								customFonts.splice(i, 1);
+								break;
+							}
+						}
+						
+						var change = new ChangeExtFonts(this.editorUi, extFonts, customFonts);
+						this.editorUi.editor.graph.model.execute(change);
+						
+						this.editorUi.menubar.hideMenu();
+						mxEvent.consume(evt);
+					}));
+				}
+				
+				tr.firstChild.nextSibling.style.fontFamily = fontname;
+			});
+			
+			for (var i = 0; i < this.defaultFonts.length; i++)
+			{
+				addItem(this.defaultFonts[i]);
+			}
+
+			menu.addSeparator(parent);
+			
+			//Load custom fonts already in the Graph
+			var extFonts = this.editorUi.editor.graph.extFonts;
+			
+			//Merge external fonts with custom fonts
+			if (extFonts != null && extFonts.length > 0)
+			{
+				var custMap = {}, changed = false;
+				
+				for (var i = 0; i < this.customFonts.length; i++)
+				{
+					custMap[this.customFonts[i].name] = true;
+				}
+				
+				for (var i = 0; i < extFonts.length; i++)
+				{
+					if (!custMap[extFonts[i].name])
+					{
+						this.customFonts.push(extFonts[i]);
+						changed = true;
+					}
+				}
+				
+				if (changed)
+				{
+					this.editorUi.fireEvent(new mxEventObject('customFontsChanged', 'customFonts', this.customFonts));
+				}
+			}
+			
+			if (this.customFonts.length > 0)
+			{
+				for (var i = 0; i < this.customFonts.length; i++)
+				{
+					var name = this.customFonts[i].name, url = this.customFonts[i].url;
+					addItem(name, url, true);
+					
+					//Load external fonts without saving them to the file
+					this.editorUi.editor.graph.addExtFont(name, url, true);
+				}
+				
+				menu.addSeparator(parent);
+				
+				menu.addItem(mxResources.get('reset'), null, mxUtils.bind(this, function()
+				{
+					var change = new ChangeExtFonts(this.editorUi, [], []);
+					this.editorUi.editor.graph.model.execute(change);
+				}), parent);
+				
+				menu.addSeparator(parent);
+			}
+			
+			menu.addItem(mxResources.get('custom') + '...', null, mxUtils.bind(this, function()
+			{
+				var graph = this.editorUi.editor.graph;
+				var curFontname = mxConstants.DEFAULT_FONTFAMILY;
+				var curType = 's';
+				var curUrl = null;
+		    	var state = graph.getView().getState(graph.getSelectionCell());
+		    	
+		    	if (state != null)
+		    	{
+		    		curFontname = state.style[mxConstants.STYLE_FONTFAMILY] || curFontname;
+		    		curType = state.style['FType'] || curType;
+		    		
+		    		if (curType == 'w')
+	    			{
+		    			var extFonts = this.editorUi.editor.graph.extFonts;
+		    			var webFont = null;
+		    			
+		    			if (extFonts != null)
+	    				{
+		    				webFont = extFonts.find(function(ef)
+    						{
+		    					return ef.name == curFontname;
+    						});
+		    			}
+		    			
+		    			curUrl = webFont != null? webFont.url : mxResources.get('urlNofFound', null, 'URL not found');
+		    			
+		    			if (curUrl.indexOf(PROXY_URL) == 0)
+	    				{
+		    				curUrl = decodeURIComponent(curUrl.substr((PROXY_URL + '?url=').length));
+	    				}
+	    			}
+		    	}
+		    	
+				var dlg = new FontDialog(this.editorUi, curFontname, curUrl, curType, mxUtils.bind(this, function(fontName, fontUrl, type)
+				{
+					if (fontName != null && fontName.length > 0)
+					{
+						graph.getModel().beginUpdate();
+						
+						try
+						{
+							graph.stopEditing(false);
+							graph.setCellStyles(mxConstants.STYLE_FONTFAMILY, fontName);
+							
+							if (type != 's')
+							{
+								graph.setCellStyles('FType', type);
+								
+								if (fontUrl.indexOf('http://') == 0)
+								{
+									fontUrl = PROXY_URL + '?url=' + encodeURIComponent(fontUrl);
+								}
+								
+								this.editorUi.editor.graph.addExtFont(fontName, fontUrl);
+							}
+							
+							var addToCustom = true;
+							
+							for (var i = 0; i < this.customFonts.length; i++)
+							{
+								if (this.customFonts[i].name == fontName)
+								{
+									addToCustom = false;
+									break;
+								}
+							}
+							
+							if (addToCustom)
+							{
+								this.customFonts.push({name: fontName, url: fontUrl});
+								this.editorUi.fireEvent(new mxEventObject('customFontsChanged', 'customFonts', this.customFonts));
+							}
+						}
+						finally
+						{
+							graph.getModel().endUpdate();
+						}
+					}
+				}));
+				this.editorUi.showDialog(dlg.container, 380, 250, true, true);
+				dlg.init();
+			}), parent, null, true);
 		})));
 	};
 })();

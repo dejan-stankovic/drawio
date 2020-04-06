@@ -21,7 +21,8 @@
 	<link rel="stylesheet" href="mxgraph/css/common.css" charset="UTF-8" type="text/css">
     <script src="js/app.min.js"></script>
 	<script>
-		var mxIsElectron = navigator.userAgent.toLowerCase().indexOf(' electron/') > -1;
+		var mxIsElectron = navigator.userAgent != null &&
+			navigator.userAgent.toLowerCase().indexOf(' electron/') > -1;
 		var GOOGLE_APPS_MAX_AREA = 25000000;
 		var GOOGLE_SHEET_MAX_AREA = 1048576; //1024x1024
 		
@@ -37,7 +38,14 @@
 				data.scale = 1;
 			}
 			
-			var graph = new Graph(document.getElementById('graph'));
+			document.body.innerHTML = '';
+			var container = document.createElement('div');
+			container.id = 'graph';
+			container.style.width = '100%';
+			container.style.height = '100%';
+			document.body.appendChild(container);
+			
+			var graph = new Graph(container);
 			data.border = parseInt(data.border) || 0;
 			data.w = parseFloat(data.w) || 0;
 			data.h = parseFloat(data.h) || 0;
@@ -74,6 +82,12 @@
 			if (data.xml.substring(0, 5) == 'iVBOR' || (extras != null && extras.isPng))
 			{
 				data.xml = Editor.extractGraphModelFromPng('data:image/png;base64,' + data.xml);
+			}
+			
+			//IE11 sends incorrect xml
+			if (data.xml.substring(0, 11) == '<#document>')
+			{
+				data.xml = data.xml.substring(11, data.xml.length - 12);
 			}
 			
 			// Parses XML
@@ -169,28 +183,34 @@
 			{
 				if (--waitCounter < 1)
 				{
-					var doneDiv = document.createElement("div");
-					doneDiv.id = 'LoadingComplete';
-					doneDiv.style.display = 'none';
-					doneDiv.setAttribute('bounds', JSON.stringify(bounds));
-					doneDiv.setAttribute('page-id', pageId);
-					doneDiv.setAttribute('scale', expScale);
-					document.body.appendChild(doneDiv);
-					
-					//Electron pdf export
-					if (mxIsElectron)
+					//Note: This code targets Chrome as it is the browser used by export server
+					//Ensure that all fonts has been loaded, this promise is never rejected
+					document.fonts.ready.then(function() 
 					{
-						try 
+						var doneDiv = document.createElement("div");
+						doneDiv.id = 'LoadingComplete';
+						doneDiv.style.display = 'none';
+						doneDiv.setAttribute('bounds', JSON.stringify(bounds));
+						doneDiv.setAttribute('page-id', pageId);
+						doneDiv.setAttribute('scale', expScale);
+						doneDiv.setAttribute('pageCount', diagrams != null? diagrams.length : 1);
+						document.body.appendChild(doneDiv);
+
+						//Electron pdf export
+						if (mxIsElectron)
 						{
-							const { ipcRenderer } = require('electron');
-							
-							ipcRenderer.send('render-finished', bounds);
+							try 
+							{
+								const { ipcRenderer } = require('electron');
+								
+								ipcRenderer.send('render-finished', bounds);
+							}
+							catch(e)
+							{
+								console.log(e);
+							}
 						}
-						catch(e)
-						{
-							console.log(e);
-						}
-					}
+					});
 				}
 			};
 			
@@ -230,51 +250,6 @@
 				{
 					window.MathJax.Hub.Queue(function ()
 					{
-						// Wraps all text labels in SVG foreignObjects to avoid
-						// Chrome changing offset for textboxes near page border
-						var pages = document.querySelectorAll('[id^=mxPage]');
-						
-						for (var i = 0; i < pages.length; i++)
-						{
-							var page = pages[i];
-							var svg = page.getElementsByTagName('svg')[0];
-							var divs = page.getElementsByTagName('div');
-							var snap = [];
-							
-							for (var j = 0; j < divs.length; j++)
-							{
-								if (divs[j].parentNode == svg.parentNode)
-								{
-									snap.push(divs[j]);
-								}
-							}
-							
-							var top = svg.parentNode.getBoundingClientRect();
-							
-							for (var j = 0; j < snap.length; j++)
-							{
-								if (snap[j].parentNode == svg.parentNode)
-								{
-									var fo = svg.ownerDocument.createElementNS(mxConstants.NS_SVG, 'foreignObject');
-									var rect = snap[j].getBoundingClientRect();
-									
-									// Sets position on foreignObject
-									fo.setAttribute('x', rect.x);
-									fo.setAttribute('y', rect.y - top.y);
-									fo.setAttribute('width', rect.width);
-									fo.setAttribute('height', rect.height);
-									
-									// Resets position on inner DIV
- 									snap[j].style.top = '0px';
-									snap[j].style.left = '0px';
-									snap[j].style.transform = '';
-									
-									fo.appendChild(snap[j]);
-									svg.appendChild(fo);
-								}
-							}
-						}
-						
 						decrementWaitCounter();
 					});
 				}, 0);
@@ -287,6 +262,63 @@
 				{
 					waitCounter++;
 					Editor.MathJaxRender(elt);
+				}
+			};
+
+			function loadExtFonts(extFonts)
+			{
+				try
+				{
+					extFonts = extFonts.split('|').map(function(ef)
+					{
+						var parts = ef.split('^');
+						return {name: parts[0], url: parts[1]};
+					});
+				}
+				catch(e)
+				{
+					//ignore and return!
+					return;
+				}
+				
+				waitCounter += extFonts.length;
+
+				//Note: This code targets Chrome as it is the browser used by export server
+				for (var i = 0; i < extFonts.length; i++)
+				{
+					if (extFonts[i].url.indexOf(Editor.GOOGLE_FONTS) == 0)
+					{
+						var link = document.createElement('link');
+						
+						link.setAttribute('rel', 'stylesheet');
+						link.setAttribute('charset', 'UTF-8');
+						link.setAttribute('type', 'text/css');
+						
+						link.onload = decrementWaitCounter;
+						link.onerror = decrementWaitCounter;
+					
+						link.setAttribute('href', extFonts[i].url);
+						var head = document.getElementsByTagName('head')[0];
+				   		head.appendChild(link);
+					}
+					else
+					{
+						//Relative urls doesn't work
+						if (extFonts[i].url.indexOf(PROXY_URL) == 0 && PROXY_URL.indexOf('http') == -1)
+						{
+							var href = window.location.href;
+							href = href.substring(0, href.lastIndexOf('/') + 1);
+							extFonts[i].url = href + extFonts[i].url;
+						}
+						
+						var font = new FontFace(extFonts[i].name, 'url(' + extFonts[i].url + ')');
+						
+						font.load().then(function(loadedFont)
+						{
+							document.fonts.add(loadedFont);
+							decrementWaitCounter();
+						}).catch(decrementWaitCounter);
+					}
 				}
 			};
 
@@ -330,11 +362,14 @@
 				// Enables math typesetting
 				math |= xmlDoc.documentElement.getAttribute('math') == '1';
 				
-				if (math)
+				//Load external fonts
+				var extFonts = xmlDoc.documentElement.getAttribute('extFonts');
+				
+				if (extFonts)
 				{
-					mxClient.NO_FO = true;
+					loadExtFonts(extFonts);
 				}
-	
+				
 				// Configure graph
 				graph.foldingEnabled = false;
 				graph.setEnabled(false);
@@ -666,28 +701,26 @@
 						to = isNaN(to)? from : Math.max(from, Math.min(to, diagrams.length - 1));
 					}
 				}
-				else
+				
+				/**
+				 * Implements %page% and %pagenumber% placeholders
+				 */
+				var graphGetGlobalVariable = graph.getGlobalVariable;
+				
+				graph.getGlobalVariable = function(name)
 				{
-					/**
-					 * Implements %page% and %pagenumber% placeholders
-					 */
-					var graphGetGlobalVariable = graph.getGlobalVariable;
-					
-					graph.getGlobalVariable = function(name)
+					if (name == 'page')
 					{
-						if (name == 'page')
-						{
-							return (diagrams == null) ? 'Page-1' :
-								(diagrams[from].getAttribute('name') || ('Page-' + (from + 1)));
-						}
-						else if (name == 'pagenumber')
-						{
-							return from + 1;
-						}
-						
-						return graphGetGlobalVariable.apply(this, arguments);
-					};
-				}
+						return (diagrams == null) ? 'Page-1' :
+							(diagrams[from].getAttribute('name') || ('Page-' + (from + 1)));
+					}
+					else if (name == 'pagenumber')
+					{
+						return from + 1;
+					}
+					
+					return graphGetGlobalVariable.apply(this, arguments);
+				};
 					
 				for (var i = from; i <= to; i++) 
 				{
@@ -776,5 +809,5 @@
 	</script>
 </head>
 <body style="margin:0px;">
-	<div id="graph" style="width:100%;height:100%;"></div>
+</body>
 </html>

@@ -1,18 +1,18 @@
 /*
- * $Id: Devel.js,v 1.27 2014/01/08 16:38:06 gaudenz Exp $
- * Copyright (c) 2006-2013, JGraph Ltd
+ * Copyright (c) 2006-2020, JGraph Ltd
+ * 
+ * This provides an indirection to make sure the mxClient.js
+ * loads before the dependent classes below are loaded. This
+ * is used for development mode where the JS is in separate
+ * files and the mxClient.js loads other files.
  */
-// This provides an indirection to make sure the mxClient.js
-// loads before the dependent classes below are loaded. This
-// is used for development mode where the JS is in separate
-// files and the mxClient.js loads other files.
-// Adds external dependencies
 mxscript(drawDevUrl + 'js/cryptojs/aes.min.js');
 mxscript(drawDevUrl + 'js/spin/spin.min.js');
 mxscript(drawDevUrl + 'js/deflate/pako.min.js');
 mxscript(drawDevUrl + 'js/deflate/base64.js');
 mxscript(drawDevUrl + 'js/jscolor/jscolor.js');
 mxscript(drawDevUrl + 'js/sanitizer/sanitizer.min.js');
+mxscript(drawDevUrl + 'js/croppie/croppie.min.js');
 
 // Uses grapheditor from devhost
 mxscript(geBasePath +'/Editor.js');
@@ -45,7 +45,9 @@ mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Azure.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Basic.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Bootstrap.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-BPMN.js');
+mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-C4.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Cabinet.js');
+mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Cisco19.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-CiscoSafe.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Citrix.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Cumulus.js');
@@ -62,6 +64,7 @@ mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-IBM.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Infographic.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Ios.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Ios7.js');
+mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Kubernetes.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-LeanMapping.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Mockup.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-MSCAE.js');
@@ -71,7 +74,9 @@ mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-PID.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Rack.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Sitemap.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Sysml.js');
+mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-ThreatModeling.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Veeam.js');
+mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-Veeam2.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-VVD.js');
 mxscript(drawDevUrl + 'js/diagramly/sidebar/Sidebar-WebIcons.js');
 
@@ -91,7 +96,6 @@ mxscript(drawDevUrl + 'js/diagramly/EditorUi.js');
 mxscript(drawDevUrl + 'js/diagramly/DiffSync.js');
 mxscript(drawDevUrl + 'js/diagramly/Settings.js');
 mxscript(drawDevUrl + 'js/diagramly/DrawioFileSync.js');
-
 
 //Comments
 mxscript(drawDevUrl + 'js/diagramly/DrawioComment.js');
@@ -137,11 +141,20 @@ mxscript(drawDevUrl + 'js/diagramly/vsdx/bmpDecoder.js');
 mxscript(drawDevUrl + 'js/diagramly/vsdx/importer.js');
 mxscript(drawDevUrl + 'js/jszip/jszip.min.js');
 
-//GraphMl Import
+// GraphMl Import
 mxscript(drawDevUrl + 'js/diagramly/graphml/mxGraphMlCodec.js');
 
-//Table Layout
+// Table Layout
 if (urlParams['tableLayout'] == '1')
 {
   mxscript(drawDevUrl + 'js/diagramly/mxTableLayout.js');
+}
+
+// Org Chart Layout
+if (urlParams['orgChartDev'] == '1')
+{
+	mxscript(drawDevUrl + 'js/orgchart/bridge.min.js');
+	mxscript(drawDevUrl + 'js/orgchart/bridge.collections.min.js');
+	mxscript(drawDevUrl + 'js/orgchart/OrgChart.Layout.min.js');
+	mxscript(drawDevUrl + 'js/orgchart/mxOrgChartLayout.js');
 }

@@ -28,13 +28,14 @@
 	 * Switch to disable logging for mode and search terms.
 	 */
 	EditorUi.enableLogging = urlParams['stealth'] != '1' &&
-		/.*\.draw\.io$/.test(window.location.hostname) &&
+		(/.*\.draw\.io$/.test(window.location.hostname) ||
+		/.*\.diagrams\.net$/.test(window.location.hostname)) &&
 		window.location.hostname != 'support.draw.io';
 	
 	/**
 	 * Protocol and hostname to use for embedded files. Default is https://www.draw.io
 	 */
-	EditorUi.drawHost = 'https://www.draw.io';
+	EditorUi.drawHost = window.DRAWIO_BASE_URL;
 	
 	/**
 	 * Switch to disable logging for mode and search terms.
@@ -54,8 +55,13 @@
 	/**
 	 * Specifies the URL for the diffsync cache.
 	 */
-	EditorUi.cacheUrl = (urlParams['dev'] == '1') ? '/cache' : 'https://rt.draw.io/cache';
+	EditorUi.cacheUrl = (urlParams['dev'] == '1') ? '/cache' : window.REALTIME_URL;
 
+	if (EditorUi.cacheUrl == null && typeof DrawioFile !== 'undefined')
+	{
+		DrawioFile.SYNC = 'none'; //Disable real-time sync
+	}
+	
 	/**
 	 * Cache timeout is 10 seconds.
 	 */
@@ -72,22 +78,69 @@
 	 */
 	EditorUi.isElectronApp = window != null && window.process != null &&
 		window.process.versions != null && window.process.versions['electron'] != null;
+	
+	/**
+	 * Specifies if drafts should be saved in IndexedDB.
+	 */
+	EditorUi.enableDrafts = !mxClient.IS_CHROMEAPP && isLocalStorage &&
+		!EditorUi.isElectronApp && urlParams['drafts'] != '0';
 
 	/**
 	 * Link for scratchpad help.
 	 */
 	EditorUi.scratchpadHelpLink = 'https://desk.draw.io/support/solutions/articles/16000042367';
-	
+
+	/**
+	 * Default Mermaid config without using foreign objects in flowcharts.
+	 */
+	EditorUi.defaultMermaidConfig = {
+		theme:'neutral',
+		arrowMarkerAbsolute:false,
+	    flowchart:
+	    {
+	    	htmlLabels:false
+	    },
+	    sequence:
+	    {
+	    	diagramMarginX:50,
+	    	diagramMarginY:10,
+	    	actorMargin:50,
+	    	width:150,
+	    	height:65,
+	    	boxMargin:10,
+	    	boxTextMargin:5,
+	    	noteMargin:10,
+	    	messageMargin:35,
+	    	mirrorActors:true,
+	    	bottomMarginAdj:1,
+	    	useMaxWidth:true,
+	    	rightAngles:false,
+	    	showSequenceNumbers:false
+	    },
+	    gantt:{
+	    	titleTopMargin:25,
+	    	barHeight:20,
+	    	barGap:4,
+	    	topPadding:50,
+	    	leftPadding:75,
+	    	gridLineStartPadding:35,
+	    	fontSize:11,
+	    	fontFamily:'"Open-Sans", "sans-serif"',
+	    	numberSectionStyles:4,
+	    	axisFormat:'%Y-%m-%d'
+	    }
+	};
+
 	/**
 	 * Updates action states depending on the selection.
 	 */
-	EditorUi.logError = function(message, url, linenumber, colno, err)
+	EditorUi.logError = function(message, url, linenumber, colno, err, severity, quiet)
 	{
-		if (urlParams['dev'] == '1')
-		{
-			EditorUi.debug('logError', message, url, linenumber, colno, err);
-		}
-		else if (EditorUi.enableLogging)
+		severity = ((severity != null) ? severity : (message.indexOf('NetworkError') >= 0 ||
+			message.indexOf('SecurityError') >= 0 || message.indexOf('NS_ERROR_FAILURE') >= 0 ||
+			message.indexOf('out of memory') >= 0) ? 'CONFIG' : 'SEVERE');
+		
+		if (EditorUi.enableLogging && urlParams['dev'] != '1')
 		{
 			try
 			{
@@ -102,9 +155,6 @@
 				else if (message != null && message.indexOf('DocumentClosedError') < 0)
 				{
 					EditorUi.lastErrorMessage = message;
-					var severity = (message.indexOf('NetworkError') >= 0 || message.indexOf('SecurityError') >= 0 ||
-						message.indexOf('NS_ERROR_FAILURE') >= 0 || message.indexOf('out of memory') >= 0) ?
-						'CONFIG' : 'SEVERE';
 					var logDomain = window.DRAWIO_LOG_URL != null ? window.DRAWIO_LOG_URL : '';
 					err = (err != null) ? err : new Error(message);
 
@@ -115,10 +165,22 @@
 		    			((err != null && err.stack != null) ? '&stack=' + encodeURIComponent(err.stack) : '');
 				}
 			}
-			catch (err)
+			catch (e)
 			{
 				// do nothing
 			}
+		}
+
+		try
+		{
+			if (!quiet && window.console != null)
+			{
+				console.error(severity, message, url, linenumber, colno, err);
+			}
+		}
+		catch (e)
+		{
+			// ignore
 		}
 	};
 	
@@ -192,7 +254,10 @@
 				
 				for (var i = 0; i < arguments.length; i++)
 			    {
-					args.push(arguments[i]);
+					if (arguments[i] != null)
+					{
+						args.push(arguments[i]);
+					}
 			    }
 			    
 				console.log.apply(console, args);
@@ -339,6 +404,12 @@
 	 * Defines the maximum size for images.
 	 */
 	EditorUi.prototype.maxImageSize = 520;
+	
+	/**
+	 * Defines the maximum width for pasted text.
+	 * Use 0 to disable check.
+	 */
+	EditorUi.prototype.maxTextWidth = 520;
 
 	/**
 	 * Images above 100K should be resampled.
@@ -514,21 +585,13 @@
 	{
 		return this.editor.graph.mathEnabled;
 	};
-	
-	/**
-	 * Returns true if using application cache
-	 */
-	EditorUi.prototype.isAppCache = function()
-	{
-		return (urlParams['appcache'] == '1' || this.isOfflineApp());
-	};
-	
+
 	/**
 	 * Returns true if offline app, which isn't a defined thing
 	 */
 	EditorUi.prototype.isOfflineApp = function()
 	{
-		return (urlParams['offline'] == '1');
+		return urlParams['offline'] == '1';
 	};
 
 	/**
@@ -649,11 +712,12 @@
 			oldStop.call(this);
 			this.active = false;
 			
-			if (spinner.status != null)
+			if (spinner.status != null && spinner.status.parentNode != null)
 			{
 				spinner.status.parentNode.removeChild(spinner.status);
-				spinner.status = null;
 			}
+
+			spinner.status = null;
 		};
 		
 		spinner.pause = function()
@@ -948,7 +1012,7 @@
 				
 				// Adds new metadata
 				fileNode.setAttribute('modified', new Date().toISOString());
-				fileNode.setAttribute('agent', navigator.userAgent);
+				fileNode.setAttribute('agent', navigator.appVersion);
 				fileNode.setAttribute('version', EditorUi.VERSION);
 				fileNode.setAttribute('etag', Editor.guid());
 				
@@ -959,7 +1023,7 @@
 					fileNode.setAttribute('type', md);
 				}
 				
-				if (this.pages != null)
+				if (fileNode.getElementsByTagName('diagram').length > 1 && this.pages != null)
 				{
 					fileNode.setAttribute('pages', this.pages.length);
 				}
@@ -1502,7 +1566,7 @@
 	EditorUi.prototype.getHtml2 = function(xml, graph, title, editLink, redirect)
 	{
 		var bg = null;
-		var js = EditorUi.drawHost + '/js/viewer.min.js';
+		var js = window.DRAWIO_VIEWER_URL || EditorUi.drawHost + '/js/viewer.min.js';
 		var s = '';
 	
 		// Makes XHTML compatible
@@ -1552,7 +1616,7 @@
 		
 		if (cause)
 		{
-			throw new Error(cause);
+			throw new Error(mxResources.get('notADiagramFile') + ' (' + cause + ')');
 		}
 		else
 		{
@@ -1625,6 +1689,31 @@
 			{
 				this.currentPage.root = this.editor.graph.model.root;
 			}
+			
+			if (urlParams['layer-ids'] != null)
+			{
+				try
+				{
+					var layerIds = urlParams['layer-ids'].split(' ');
+					var layerIdsMap = {};
+					
+					for (var i = 0; i < layerIds.length; i++)
+					{
+						layerIdsMap[layerIds[i]] = true;
+					}
+					
+					var model = this.editor.graph.getModel();
+					var children = model.getChildren(model.root);
+					
+					// handle layers visibility
+					for (var i = 0; i < children.length; i++)
+					{
+						var child = children[i];
+						model.setVisible(child, layerIdsMap[child.id] || false);
+					}
+				}
+				catch(e){} //ignore
+			}
 		}
 	};
 
@@ -1662,7 +1751,8 @@
 	 * @param {number} dx X-coordinate of the translation.
 	 * @param {number} dy Y-coordinate of the translation.
 	 */
-	EditorUi.prototype.downloadFile = function(format, uncompressed, addShadow, ignoreSelection, currentPage, pageVisible, transparent, scale, border, grid)
+	EditorUi.prototype.downloadFile = function(format, uncompressed, addShadow, ignoreSelection, currentPage,
+		pageVisible, transparent, scale, border, grid, includeXml)
 	{
 		try
 		{
@@ -1763,7 +1853,8 @@
 							this.editor.graph.pageVisible = pageVisible;
 						}
 						
-						var req = this.createDownloadRequest(newTitle, format, ignoreSelection, base64, transparent, currentPage, scale, border, grid);
+						var req = this.createDownloadRequest(newTitle, format, ignoreSelection, base64,
+							transparent, currentPage, scale, border, grid, includeXml);
 						this.editor.graph.pageVisible = prev;
 						
 						return req;
@@ -1787,7 +1878,8 @@
 	 * @param {number} dx X-coordinate of the translation.
 	 * @param {number} dy Y-coordinate of the translation.
 	 */
-	EditorUi.prototype.createDownloadRequest = function(filename, format, ignoreSelection, base64, transparent, currentPage, scale, border, grid)
+	EditorUi.prototype.createDownloadRequest = function(filename, format, ignoreSelection, base64, transparent,
+		currentPage, scale, border, grid, includeXml)
 	{
 		var graph = this.editor.graph;
 		var bounds = graph.getGraphBounds();
@@ -1804,7 +1896,7 @@
 			throw {message: mxResources.get('drawingTooLarge')};
 		}
 		
-		var embed = '0';
+		var embed = (includeXml) ? '1' : '0';
        	
 		if (format == 'pdf' && currentPage == false)
 		{
@@ -2305,6 +2397,7 @@
 		
 		if (oldFile != null)
 		{
+			EditorUi.debug('File.closed', [oldFile]);
 			oldFile.removeListener(this.descriptorChangedListener);
 			oldFile.close();
 		}
@@ -2431,6 +2524,8 @@
 						label: 'autosave_' + ((this.editor.autosave) ? 'on' : 'off')});
 				}
 				
+				EditorUi.debug('File.opened', [file]);
+				
 				if (this.editor.editable && this.mode == file.getMode() &&
 					file.getMode() != App.MODE_DEVICE && file.getMode() != null)
 				{
@@ -2458,23 +2553,14 @@
 			{
 				this.fileLoadedError = e;
 				
-				// Makes sure the file does not save the invalid UI model and overwrites anything important
-				if (window.console != null)
-				{
-					console.error(e);
-					console.log('error in fileLoaded:', file, e);
-				}
-				
 				if (EditorUi.enableLogging && !this.isOffline())
 				{
 		        	try
 		        	{
-						var img = new Image();
-						var logDomain = window.DRAWIO_LOG_URL != null ? window.DRAWIO_LOG_URL : '';
-				    	img.src = logDomain + '/log?v=' + encodeURIComponent(EditorUi.VERSION) +
-				   			'&msg=errorInFileLoaded:url:' + encodeURIComponent(window.location.href) +
-			    			((e != null && e.message != null) ? ':err:' + encodeURIComponent(e.message) : '') +
-			    			((e != null && e.stack != null) ? '&stack=' + encodeURIComponent(e.stack) : '');
+		        		EditorUi.logEvent({category: 'ERROR-LOAD-FILE-' +
+		        			((file != null) ? file.getHash() : 'none'),
+		        			action: 'message_' + e.message,
+		        			label: 'stack_' + e.stack});
 		        	}
 		        	catch (e)
 		        	{
@@ -2502,7 +2588,7 @@
 				
 				if (!noDialogs)
 				{
-					this.handleError(e, mxResources.get('errorLoadingFile'), fn, true);
+					this.handleError(e, mxResources.get('errorLoadingFile'), fn, true, null, null, true);
 				}
 				else
 				{
@@ -2688,7 +2774,7 @@
 		{
 			if (this.scratchpad == null)
 			{
-				this.getLocalData('.scratchpad', mxUtils.bind(this, function(xml)
+				StorageFile.getFileContent(this, '.scratchpad', mxUtils.bind(this, function(xml)
 				{
 					if (xml == null)
 					{
@@ -2803,14 +2889,14 @@
 	 * @param {number} dx X-coordinate of the translation.
 	 * @param {number} dy Y-coordinate of the translation.
 	 */
-	EditorUi.prototype.loadLibrary = function(file)
+	EditorUi.prototype.loadLibrary = function(file, expand)
 	{
 		var doc = mxUtils.parseXml(file.getData());
 		
 		if (doc.documentElement.nodeName == 'mxlibrary')
 		{
 			var images = JSON.parse(mxUtils.getTextContent(doc.documentElement));
-			this.libraryLoaded(file, images, doc.documentElement.getAttribute('title'));
+			this.libraryLoaded(file, images, doc.documentElement.getAttribute('title'), expand);
 		}
 		else
 		{
@@ -2835,7 +2921,7 @@
 	 * @param {number} dx X-coordinate of the translation.
 	 * @param {number} dy Y-coordinate of the translation.
 	 */
-	EditorUi.prototype.libraryLoaded = function(file, images, optionalTitle)
+	EditorUi.prototype.libraryLoaded = function(file, images, optionalTitle, expand)
 	{
 		if (this.sidebar == null)
 		{
@@ -2887,7 +2973,8 @@
 		
 		// Adds new sidebar entry for this library
 		var tmp = (optionalTitle != null && optionalTitle.length > 0) ? optionalTitle : file.getTitle();
-		var contentDiv = this.sidebar.addPalette(file.getHash(), tmp, true, mxUtils.bind(this, function(content)
+		var contentDiv = this.sidebar.addPalette(file.getHash(), tmp,
+			(expand != null) ? expand : true, mxUtils.bind(this, function(content)
 		{
 			addImages(images, content);
 	    }));
@@ -2912,7 +2999,7 @@
 	    // Workaround for CSS error in IE8 (standards and quirks)
 	    if (!mxClient.IS_QUIRKS && document.documentMode != 8)
 	    {
-	    		buttons.style.backgroundColor = 'inherit';
+	    	buttons.style.backgroundColor = 'inherit';
 	    }
 	    
 	    title.style.position = 'relative';
@@ -2923,6 +3010,7 @@
 		btn.setAttribute('title', mxResources.get('close'));
 		btn.setAttribute('valign', 'absmiddle');
 		btn.setAttribute('border', '0');
+		btn.style.cursor = 'pointer';
 		btn.style.margin = '0 3px';
 		
 		var saveBtn = null;
@@ -3094,23 +3182,19 @@
 			// Adds drop handler from graph
 			mxEvent.addGestureListeners(contentDiv, function(){}, mxUtils.bind(this, function(evt)
 			{
-				if (graph.isMouseDown && graph.panningManager != null && graph.graphHandler.shape != null)
+				if (graph.isMouseDown && graph.panningManager != null && graph.graphHandler.first != null)
 				{
-					graph.graphHandler.shape.node.style.visibility = 'hidden';
-					contentDiv.style.backgroundColor = '#f1f3f4';
-					contentDiv.style.cursor = 'copy';
-					graph.panningManager.stop();
-					graph.autoScroll = false;
-					
-					if (graph.graphHandler.guide != null)
-					{
-						graph.graphHandler.guide.setVisible(false);
-					}
+					graph.graphHandler.suspend();
 					
 					if (graph.graphHandler.hint != null)
 					{
 						graph.graphHandler.hint.style.visibility = 'hidden';	
 					}
+					
+					contentDiv.style.backgroundColor = '#f1f3f4';
+					contentDiv.style.cursor = 'copy';
+					graph.panningManager.stop();
+					graph.autoScroll = false;
 					
 					mxEvent.consume(evt);
 				}
@@ -3122,9 +3206,11 @@
 					contentDiv.style.cursor = 'default';
 					this.sidebar.showTooltips = true;
 					graph.panningManager.stop();
+					
 					graph.graphHandler.reset();
 					graph.isMouseDown = false;
 					graph.autoScroll = true;
+					
 					addSelection(evt);
 					mxEvent.consume(evt);
 				}
@@ -3133,22 +3219,18 @@
 			// Handles mouse leaving the library and restoring move
 			mxEvent.addListener(contentDiv, 'mouseleave', mxUtils.bind(this, function(evt)
 			{
-				if (graph.isMouseDown && graph.graphHandler.shape != null)
+				if (graph.isMouseDown && graph.graphHandler.first != null)
 				{
-					graph.graphHandler.shape.node.style.visibility = 'visible';
-					contentDiv.style.backgroundColor = '';
-					contentDiv.style.cursor = '';
-					graph.autoScroll = true;
-					
-					if (graph.graphHandler.guide != null)
-					{
-						graph.graphHandler.guide.setVisible(true);
-					}
-					
+					graph.graphHandler.resume();
+
 					if (graph.graphHandler.hint != null)
 					{
 						graph.graphHandler.hint.style.visibility = 'visible';	
 					}
+					
+					contentDiv.style.backgroundColor = '';
+					contentDiv.style.cursor = '';
+					graph.autoScroll = true;
 				}
 			}));
 			
@@ -3176,7 +3258,7 @@
 				    	{
 							if (data != null && mimeType.substring(0, 6) == 'image/')
 							{
-								var style = 'shape=image;verticalLabelPosition=bottom;verticalAlign=top;aspect=fixed;image=' +
+								var style = 'shape=image;verticalLabelPosition=bottom;verticalAlign=top;imageAspect=0;aspect=fixed;image=' +
 									this.convertDataUri(data);
 								var cells = [new mxCell('', new mxGeometry(0, 0, w, h), style)];
 								cells[0].vertex = true;
@@ -3195,7 +3277,18 @@
 								
 								var doImport = mxUtils.bind(this, function(theData, theMimeType)
 								{
-									if (theData != null && theMimeType == 'text/xml')
+									if (theData != null && theMimeType == 'application/pdf')
+									{
+										var xml = Editor.extractGraphModelFromPdf(theData);
+					
+										if (xml != null && xml.length > 0)
+										{
+											theMimeType = 'text/xml';
+											theData = xml;
+										}
+									}
+									
+									if (theData != null) //Try to parse the file as xml (can be a library or mxfile). Otherwise, an error will be shown
 									{
 										var doc = mxUtils.parseXml(theData);
 										
@@ -3395,55 +3488,15 @@
 	 */
 	EditorUi.prototype.footerHeight = 0;
 	
-    if (urlParams['offline'] == '1' || EditorUi.isElectronApp)
-    {
-		//EditorUi.prototype.footerHeight = 4;
-    }
-    else
-    {
-		if (urlParams['savesidebar'] == '1')
-		{
-    		Sidebar.prototype.thumbWidth = 64;
-    		Sidebar.prototype.thumbHeight = 64;
-		}
+	if (urlParams['savesidebar'] == '1')
+	{
+		Sidebar.prototype.thumbWidth = 64;
+		Sidebar.prototype.thumbHeight = 64;
+	}
 
-		//EditorUi.prototype.footerHeight = (screen.width >= 760 && screen.height >= 240) ? 46 : 0;
-		
-		// Fetches footer from page
-		EditorUi.prototype.createFooter = function()
-		{
-			var footer = document.getElementById('geFooter');
-			
-			if (footer != null)
-			{
-//				footer.style.visibility = 'hidden';
-//				
-//				// Adds button to hide the footer
-//				var img = document.createElement('img');
-//				img.setAttribute('border', '0');
-//				img.setAttribute('src', Dialog.prototype.closeImage);
-//				img.setAttribute('title', mxResources.get('hide'));
-//				footer.appendChild(img)
-//
-//				if (mxClient.IS_QUIRKS)
-//				{
-//					img.style.position = 'relative';
-//					img.style.styleFloat = 'right';
-//					img.style.top = '-30px';
-//					img.style.left = '164px';
-//					img.style.cursor = 'pointer';
-//				}
-//				
-//				mxEvent.addListener(img, 'click', mxUtils.bind(this, function()
-//				{
-//					this.hideFooter();
-//				}));
-			}
-
-			return footer;
-		};
-    }
-    
+	/**
+	 * Programmatic settings for theme.
+	 */
     EditorUi.initTheme = function()
     {
     	if (uiTheme == 'atlas')
@@ -3473,6 +3526,7 @@
 			Sidebar.prototype.dragPreviewBorder = '1px dashed #cccccc';
 			mxGraphHandler.prototype.previewColor = '#cccccc';
 			StyleFormatPanel.prototype.defaultStrokeColor = '#cccccc';
+			mxConstants.DROP_TARGET_COLOR = '#00ff00';
 			
 			if (mxClient.IS_SVG)
 			{
@@ -3483,45 +3537,15 @@
     };
     
     EditorUi.initTheme();
-    
-    /**
-     * Hides the footer.
-     */
-    EditorUi.prototype.hideFooter = function()
-    {
-    	var footer = document.getElementById('geFooter');
-	    	
-    	if (footer != null)
-    	{
-    		this.footerHeight = 0;
-    		footer.style.display = 'none';
-    		this.refresh();
-    	}
-    };
 
-    /**
-     * Shows the footer.
-     */
-    EditorUi.prototype.showFooter = function(height)
-    {
-    	var footer = document.getElementById('geFooter');
-	    	
-    	if (footer != null)
-    	{
-    		this.footerHeight = height;
-    		footer.style.display = 'inline';
-    		this.refresh();
-    	}
-    };
-    
 	/**
 	 * Overrides image dialog to add image search and Google+.
 	 */
     EditorUi.prototype.showImageDialog = function(title, value, fn, ignoreExisting, convertDataUri)
 	{
 		// KNOWN: IE+FF don't return keyboard focus after image dialog (calling focus doesn't help)
-	    	var dlg = new ImageDialog(this, title, value, fn, ignoreExisting, convertDataUri);
-		this.showDialog(dlg.container, (Graph.fileSupport) ? 440 : 360, (Graph.fileSupport) ? 200 : 90, true, true);
+	    var dlg = new ImageDialog(this, title, value, fn, ignoreExisting, convertDataUri);
+		this.showDialog(dlg.container, (Graph.fileSupport) ? 480 : 360, (Graph.fileSupport) ? 200 : 90, true, true);
 		dlg.init();
 	};
 
@@ -3626,10 +3650,34 @@
 	 * @param {number} dx X-coordinate of the translation.
 	 * @param {number} dy Y-coordinate of the translation.
 	 */
-	EditorUi.prototype.handleError = function(resp, title, fn, invokeFnOnClose, notFoundMessage, fileHash)
+	EditorUi.prototype.handleError = function(resp, title, fn, invokeFnOnClose, notFoundMessage, fileHash, disableLogging)
 	{
 		var resume = (this.spinner != null && this.spinner.pause != null) ? this.spinner.pause() : function() {};
 		var e = (resp != null && resp.error != null) ? resp.error : resp;
+
+		// Logs errors and writes stack to console
+		if (resp != null && resp.stack != null && resp.message != null)
+		{
+			try
+			{
+				if (!disableLogging)
+				{
+					EditorUi.logError('Caught: ' + ((resp.message != null) ?
+						resp.message : 'null'), null, null, null, resp, 'INFO');
+				}
+				else
+				{
+					if (window.console != null)
+					{
+						console.error('EditorUi.handleError:', resp);
+					}
+				}
+			}
+			catch (e)
+			{
+				// ignore
+			}
+		}
 	
 		if (e != null || title != null)
 		{
@@ -3865,6 +3913,117 @@
 		this.showDialog(dlg.container, 340, 46 + height, true, closable);
 		dlg.init();
 	};
+	
+	/**
+	 * Creates a popup banner.
+	 */
+	EditorUi.prototype.showBanner = function(id, label, onclick)
+	{
+		var result = false;
+		
+		if (!this.bannerShowing && !this['hideBanner' + id] &&
+			(!isLocalStorage || mxSettings.settings == null ||
+			mxSettings.settings['close' + id] == null))
+		{
+			var banner = document.createElement('div');
+			banner.style.cssText = 'position:absolute;bottom:10px;left:50%;max-width:90%;padding:18px 34px 12px 20px;' +
+				'font-size:16px;font-weight:bold;white-space:nowrap;cursor:pointer;z-index:' + mxPopupMenu.prototype.zIndex + ';';
+			mxUtils.setPrefixedStyle(banner.style, 'box-shadow', '1px 1px 2px 0px #ddd');
+			mxUtils.setPrefixedStyle(banner.style, 'transform', 'translate(-50%,120%)');
+			mxUtils.setPrefixedStyle(banner.style, 'transition', 'all 1s ease');
+			banner.className = 'geBtn gePrimaryBtn';
+			
+			var logo = document.createElement('img');
+			logo.setAttribute('src', IMAGE_PATH + '/logo.png');
+			logo.setAttribute('border', '0');
+			logo.setAttribute('align', 'absmiddle');
+			logo.style.cssText = 'margin-top:-4px;margin-left:8px;margin-right:12px;width:26px;height:26px;';
+			banner.appendChild(logo);
+	
+			var img = document.createElement('img');
+			img.setAttribute('src', Dialog.prototype.closeImage);
+			img.setAttribute('title', mxResources.get('close'));
+			img.setAttribute('border', '0');
+			img.style.cssText = 'position:absolute;right:10px;top:12px;filter:invert(1);padding:6px;margin:-6px;cursor:default;';
+			banner.appendChild(img);
+			
+			mxUtils.write(banner, label);
+			document.body.appendChild(banner);
+			this.bannerShowing = true;
+			
+			var div = document.createElement('div');
+			div.style.cssText = 'font-size:11px;text-align:center;font-weight:normal;';
+			var chk = document.createElement('input');
+			chk.setAttribute('type', 'checkbox');
+			chk.setAttribute('id', 'geDoNotShowAgainCheckbox');
+			chk.style.marginRight = '6px';
+			div.appendChild(chk);
+			
+			var label = document.createElement('label');
+			label.setAttribute('for', 'geDoNotShowAgainCheckbox');
+			mxUtils.write(label, mxResources.get('doNotShowAgain'));
+			div.appendChild(label);
+			banner.style.paddingBottom = '30px';
+			banner.appendChild(div);
+			
+			var onclose = mxUtils.bind(this, function(showAgain)
+			{
+				if (banner.parentNode != null)
+				{
+					banner.parentNode.removeChild(banner);
+					this.bannerShowing = false;
+					
+					if (chk.checked)
+					{
+						this['hideBanner' + id] = true;
+	
+						if (isLocalStorage && mxSettings.settings != null)
+						{
+							mxSettings.settings['close' + id] = Date.now();
+							mxSettings.save();
+						}
+					}
+				}
+			});
+			
+			mxEvent.addListener(img, 'click', mxUtils.bind(this, function(e)
+			{
+				mxEvent.consume(e);
+				onclose();
+			}));
+			
+			mxEvent.addListener(banner, 'click', mxUtils.bind(this, function(e)
+			{
+				var source = mxEvent.getSource(e);
+				
+				if (source != chk && source != label)
+				{
+					mxEvent.consume(e);
+					onclick();
+					onclose();
+				}
+			}));
+			
+			window.setTimeout(mxUtils.bind(this, function()
+			{
+				mxUtils.setPrefixedStyle(banner.style, 'transform', 'translate(-50%,0%)');
+			}), 500);
+			
+			window.setTimeout(mxUtils.bind(this, function()
+			{
+				mxUtils.setPrefixedStyle(banner.style, 'transform', 'translate(-50%,120%)');
+				
+				window.setTimeout(mxUtils.bind(this, function()
+				{
+					onclose(true);
+				}), 1000);
+			}), 30000);
+			
+			result = true;
+		}
+		
+		return result;
+	};
 
 	/**
 	 * Translates this point by the given vector.
@@ -3896,13 +4055,9 @@
 	/**
 	 * Handling for canvas export.
 	 */
-
-	/**
-	 * See fixme in convertMath for client-side image generation with math.
-	 */
 	EditorUi.prototype.isExportToCanvas = function()
 	{
-		return mxClient.IS_CHROMEAPP || this.useCanvasForExport;
+		return this.editor.isExportToCanvas();
 	};
 
 	/**
@@ -4014,21 +4169,31 @@
 				win.close();
 			}
 		}
-//		else if (mxClient.IS_IOS)
-//		{
-//			this.showTextDialog(filename + ':', data);
-//		}
+		else if (mxClient.IS_IOS && this.isOffline())
+		{
+			// Workaround for "WebKitBlobResource error 1" in mobile Safari
+			if (!navigator.standalone && mimeType != null && mimeType.substring(0, 6) == 'image/')
+			{
+				this.openInNewWindow(data, mimeType, base64Encoded);
+			}
+			else
+			{
+				this.showTextDialog(filename + ':', data);
+			}
+		}
 		else
 		{
 			var a = document.createElement('a');
 			
-			// Workaround for mxXmlRequest.simulate no longer working in Safari/PaleMoon
-			// if this is used (ie PNG export broken after XML export in Safari/PaleMoon).
-			var useDownload = !mxClient.IS_SF && navigator.userAgent.indexOf("PaleMoon/") < 0 &&
-				typeof a.download !== 'undefined';
+			// Workaround for mxXmlRequest.simulate no longer working in PaleMoon
+			// if this is used (ie PNG export broken after XML export in PaleMoon)
+			// and for "WebKitBlobResource error 1" for all browsers on iOS.
+			var useDownload = (navigator.userAgent == null ||
+				navigator.userAgent.indexOf("PaleMoon/") < 0) &&
+				!mxClient.IS_IOS && typeof a.download !== 'undefined';
 			
 			// Workaround for Chromium 65 cross-domain anchor download issue
-			if (mxClient.IS_GC)
+			if (mxClient.IS_GC && navigator.userAgent != null)
 			{
 				var raw = navigator.userAgent.match(/Chrom(e|ium)\/([0-9]+)\./)
 				var vers = raw ? parseInt(raw[2], 10) : false;
@@ -4155,8 +4320,7 @@
 				// Opens a new window
 				if (mode == '_blank')
 				{
-					if (mimeType != null && mimeType.substring(0, 6) == 'image/' &&
-						(mimeType.substring(0, 9) != 'image/svg' || mxClient.IS_SVG))
+					if (mimeType != null && mimeType.substring(0, 6) == 'image/')
 					{
 						this.openInNewWindow(data, mimeType, base64Encoded);
 					}
@@ -4213,43 +4377,44 @@
 	 */
 	EditorUi.prototype.openInNewWindow = function(data, mimeType, base64Encoded)
 	{
-		// In Google Chrome 60 the code from below produces a blank window
-		if (mxClient.IS_GC || mxClient.IS_EDGE || document.documentMode == 11 || document.documentMode == 10)
+		var win = window.open('about:blank');
+		
+		if (win == null || win.document == null)
 		{
-			var win = window.open('about:blank');
-			
-			if (win == null || win.document == null)
+			mxUtils.popup(data, true);
+		}
+		else
+		{
+			if (mimeType == 'image/svg+xml' && !mxClient.IS_SVG)
 			{
-				mxUtils.popup(data, true);
+				// KNOWN: Output is scaled in Chrome on macOS
+				win.document.write('<html><pre>' + mxUtils.htmlEntities(data, false) + '</pre></html>');
+				win.document.close();
 			}
 			else
 			{
-				// Workaround for broken images in SVG output in Chrome
+				var temp = (base64Encoded) ? data : btoa(unescape(encodeURIComponent(data)));
+				
 				if (mimeType == 'image/svg+xml')
 				{
-					win.document.write('<html>' + data + '</html>');
+					// Workaround for scaled output in Chrome
+					if (mxClient.IS_GC && mxClient.IS_MAC)
+					{
+						win.document.write('<html><object style="max-width:100%;" data="data:' +
+								mimeType  + ';base64,' + temp + '"/></html>');
+					}
+					else
+					{
+						win.document.write('<html>'+ data + '</html>');
+					}
 				}
 				else
 				{
 					win.document.write('<html><img style="max-width:100%;" src="data:' +
-						mimeType + ((base64Encoded) ? ';base64,' +
-						data : ';charset=utf8,' + encodeURIComponent(data)) +
-						'"/></html>');
+						mimeType  + ';base64,' + temp + '"/></html>');
 				}
 				
 				win.document.close();
-			}
-		}
-		else
-		{
-			// win.open is workaround for cleared contents in Chrome after delay
-			// when using location.replace
-			var win = window.open('data:' + mimeType + ((base64Encoded) ? ';base64,' +
-					data : ';charset=utf8,' + encodeURIComponent(data)));
-			
-			if (win == null || win.document == null)
-			{
-				mxUtils.popup(data, true);
 			}
 		}
 	};
@@ -4526,73 +4691,71 @@
 	{
 		if (this.spinner.spin(document.body, mxResources.get('export')))
 		{
-			var selectionEmpty = this.editor.graph.isSelectionEmpty();
-			ignoreSelection = (ignoreSelection != null) ? ignoreSelection : selectionEmpty;
-			var bg = (transparentBackground) ? null : this.editor.graph.background;
-			
-			if (bg == mxConstants.NONE)
+			try
 			{
-				bg = null;
-			}
-			
-			// Handles special case where background is null but transparent is false
-			if (bg == null && transparentBackground == false)
-			{
-				bg = '#ffffff';
-			}
-			
-			// Sets or disables alternate text for foreignObjects. Disabling is needed
-			// because PhantomJS seems to ignore switch statements and paint all text.
-			var svgRoot = this.editor.graph.getSvg(bg, scale, border, noCrop, null,
-				ignoreSelection, null, null, (linkTarget == 'blank') ? '_blank' :
-				((linkTarget == 'self') ? '_top' : null));
-			
-			if (addShadow)
-			{
-				this.editor.graph.addSvgShadow(svgRoot);
-			}
-			
-			var filename = this.getBaseFilename() + '.svg';
+				var selectionEmpty = this.editor.graph.isSelectionEmpty();
+				ignoreSelection = (ignoreSelection != null) ? ignoreSelection : selectionEmpty;
+				var bg = (transparentBackground) ? null : this.editor.graph.background;
+				
+				if (bg == mxConstants.NONE)
+				{
+					bg = null;
+				}
+				
+				// Handles special case where background is null but transparent is false
+				if (bg == null && transparentBackground == false)
+				{
+					bg = '#ffffff';
+				}
+				
+				// Sets or disables alternate text for foreignObjects. Disabling is needed
+				// because PhantomJS seems to ignore switch statements and paint all text.
+				var svgRoot = this.editor.graph.getSvg(bg, scale, border, noCrop, null,
+					ignoreSelection, null, null, (linkTarget == 'blank') ? '_blank' :
+					((linkTarget == 'self') ? '_top' : null), null, true);
+				
+				if (addShadow)
+				{
+					this.editor.graph.addSvgShadow(svgRoot);
+				}
+				
+				var filename = this.getBaseFilename() + '.svg';
+	
+				var doSave = mxUtils.bind(this, function(svgRoot)
+				{
+					this.spinner.stop();
+					
+					if (editable)
+					{
+						svgRoot.setAttribute('content', this.getFileData(true, null, null, null, ignoreSelection,
+							currentPage, null, null, null, false));
+					}
+					
+					var svg = '<?xml version="1.0" encoding="UTF-8"?>\n' +
+						'<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n' +
+						mxUtils.getXml(svgRoot);
+				
+		    		if (this.isLocalFileSave() || svg.length <= MAX_REQUEST_SIZE)
+		    		{
+		    			this.saveData(filename, 'svg', svg, 'image/svg+xml');
+		    		}
+		    		else
+		    		{
+		    			this.handleError({message: mxResources.get('drawingTooLarge')}, mxResources.get('error'), mxUtils.bind(this, function()
+		    			{
+		    				mxUtils.popup(svg);
+		    			}));
+		    		}
+				});
 
-			var doSave = mxUtils.bind(this, function(svgRoot)
-			{
-				this.spinner.stop();
+				// Adds CSS
+				this.editor.addFontCss(svgRoot);
 				
-				if (editable)
+				if (this.editor.graph.mathEnabled)
 				{
-					svgRoot.setAttribute('content', this.getFileData(true, null, null, null, ignoreSelection,
-						currentPage, null, null, null, false));
+					this.editor.addMathCss(svgRoot);
 				}
 				
-				if (this.editor.fontCss != null)
-				{
-					var svgDoc = svgRoot.ownerDocument;
-					var style = (svgDoc.createElementNS != null) ?
-							svgDoc.createElementNS(mxConstants.NS_SVG, 'style') : svgDoc.createElement('style');
-					style.setAttribute('type', 'text/css');
-					mxUtils.setTextContent(style, this.editor.fontCss);
-					svgRoot.getElementsByTagName('defs')[0].appendChild(style);
-				}
-				
-				var svg = '<?xml version="1.0" encoding="UTF-8"?>\n' +
-					'<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n' +
-					mxUtils.getXml(svgRoot);
-			
-	    		if (this.isLocalFileSave() || svg.length <= MAX_REQUEST_SIZE)
-	    		{
-	    			this.saveData(filename, 'svg', svg, 'image/svg+xml');
-	    		}
-	    		else
-	    		{
-	    			this.handleError({message: mxResources.get('drawingTooLarge')}, mxResources.get('error'), mxUtils.bind(this, function()
-	    			{
-	    				mxUtils.popup(svg);
-	    			}));
-	    		}
-			});
-			
-			this.convertMath(this.editor.graph, svgRoot, mxUtils.bind(this, function()
-			{
 				if (embedImages)
 				{
 					// Caches images
@@ -4607,7 +4770,11 @@
 				{
 					doSave(svgRoot);
 				}
-			}));
+			}
+			catch (e)
+			{
+				this.handleError(e);
+			}
 		}
 	};
 	
@@ -5481,6 +5648,10 @@
 		{
 			allPages.style.display = 'none';
 		}
+		else
+		{
+			height += 26;
+		}
 	
 		mxEvent.addListener(include, 'change', function()
 		{
@@ -5504,7 +5675,6 @@
 		linkSelect.style.marginLeft = '8px';
 		linkSelect.style.marginRight = '10px';
 		linkSelect.className = 'geBtn';
-
 
 		var autoOption = document.createElement('option');
 		autoOption.setAttribute('value', 'auto');
@@ -5717,7 +5887,8 @@
 	 */
 	EditorUi.prototype.createEmbedSvg = function(fit, shadow, image, lightbox, edit, layers, fn)
 	{
-		var svgRoot = this.editor.graph.getSvg();
+		var svgRoot = this.editor.graph.getSvg(null, null, null, null, null,
+				null, null, null, null, null, !image);
 		
 		// Keeps hashtag links on same page
 		var links = svgRoot.getElementsByTagName('a');
@@ -5752,7 +5923,7 @@
 		{
    			var onclick = ' ';
    			var css = '';
-   			
+
    			// Adds double click handling
 			if (lightbox)
 			{
@@ -5814,6 +5985,14 @@
 				svgRoot.setAttribute('style', css);
 			}
 			
+			// Adds CSS
+			this.editor.addFontCss(svgRoot);
+			
+			if (this.editor.graph.mathEnabled)
+			{
+				this.editor.addMathCss(svgRoot);
+			}
+			
 			fn(mxUtils.getXml(svgRoot));
 		}
 	};
@@ -5870,60 +6049,6 @@
 	    return null;
 	};
 
-	/**
-	 * Converts math in the given SVG
-	 */
-	EditorUi.prototype.convertMath = function(graph, svgRoot, callback)
-	{
-		// CSS styles are needed for the math to render correctly
-		// unfortunately, there is no ID on the MathJax CSS only
-		var defs = svgRoot.getElementsByTagName('defs');
-		
-		if (defs != null && defs.length > 0)
-		{
-			var styles = document.getElementsByTagName('style');
-			
-			for (var i = 0; i < styles.length; i++)
-			{
-				if (styles[i].getAttribute('type') == 'text/css')
-				{
-					defs[0].appendChild(styles[i].cloneNode(true));
-				}
-			}
-		}
-		
-		// NOTE: This is never true as mathEnabled is not set on off-screen graphs
-		// (on-screen is handled via createSvgImageExport override in Editor.js)
-		if (graph != this.editor.graph && graph.mathEnabled &&
-			typeof(MathJax) !== 'undefined' &&
-			typeof(MathJax.Hub) !== 'undefined')
-		{
-	      	// Temporarily attaches to DOM for rendering
-			// FIXME: If adding svgRoot to body, the text
-			// value of the math is appended, if not
-			// added to DOM then LaTeX does not work.
-			// This must be fixed to enable client-side export
-			// if math is enabled.
-//			document.body.appendChild(svgRoot);
-			Editor.MathJaxRender(svgRoot);
-
-			window.setTimeout(mxUtils.bind(this, function()
-			{
-				MathJax.Hub.Queue(mxUtils.bind(this, function ()
-				{
-					// Removes from DOM
-//					svgRoot.parentNode.removeChild(svgRoot);
-					
-					callback();
-				}));
-			}), 0);
-		}
-		else
-		{
-			callback();
-		}
-	};
-	
 	/**
 	 * 
 	 */
@@ -6081,8 +6206,9 @@
 	 * Returns the SVG of the diagram with embedded XML. If a callback function is
 	 * used, the images are converted to data URIs.
 	 */
-	EditorUi.prototype.getEmbeddedSvg = function(xml, graph, url, noHeader, callback, ignoreSelection, redirect)
+	EditorUi.prototype.getEmbeddedSvg = function(xml, graph, url, noHeader, callback, ignoreSelection, redirect, embedImages)
 	{
+		embedImages = (embedImages != null) ? embedImages : true;
 		var bg = graph.background;
 		
 		if (bg == mxConstants.NONE)
@@ -6108,7 +6234,7 @@
 		{
 			svgRoot.setAttribute('resource', url);
 		}
-
+		
 		// LATER: Click on SVG content to start editing
 //		if (redirect != null)
 //		{
@@ -6119,11 +6245,23 @@
 
 		if (callback != null)
 		{
-			this.convertImages(svgRoot, mxUtils.bind(this, function(svgRoot)
+			this.embedFonts(svgRoot, mxUtils.bind(this, function(svgRoot)
 			{
-				callback(((!noHeader) ? '<?xml version="1.0" encoding="UTF-8"?>\n' +
-					'<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n' : '') +
-					mxUtils.getXml(svgRoot));
+				if (embedImages)
+				{
+					this.convertImages(svgRoot, mxUtils.bind(this, function(svgRoot)
+					{
+						callback(((!noHeader) ? '<?xml version="1.0" encoding="UTF-8"?>\n' +
+							'<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n' : '') +
+							mxUtils.getXml(svgRoot));
+					}));
+				}
+				else
+				{
+					callback(((!noHeader) ? '<?xml version="1.0" encoding="UTF-8"?>\n' +
+						'<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n' : '') +
+						mxUtils.getXml(svgRoot));
+				}
 			}));
 		}
 		else
@@ -6132,6 +6270,44 @@
 				'<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n' : '') +
 				mxUtils.getXml(svgRoot);
 		}
+	};
+	
+	/**
+	 * Embeds font CSS as data URIs into the given svgRoot.
+	 */
+	EditorUi.prototype.embedFonts = function(svgRoot, callback)
+	{
+		this.loadFonts(mxUtils.bind(this, function()
+		{
+			try
+			{
+				if (this.editor.resolvedFontCss != null)
+				{
+					this.editor.addFontCss(svgRoot, this.editor.resolvedFontCss);
+				}
+				
+				this.embedExtFonts(mxUtils.bind(this, function(extFontsEmbeddedCss)
+				{
+					try
+					{
+						if (extFontsEmbeddedCss != null)
+						{
+							this.editor.addFontCss(svgRoot, extFontsEmbeddedCss);
+						}
+						
+						callback(svgRoot);
+					}
+					catch (e)
+					{
+						callback(svgRoot);
+					}
+				}));
+			}
+			catch (e)
+			{
+				callback(svgRoot);
+			}
+		}));
 	};
 	
 	/**
@@ -6192,6 +6368,129 @@
 	};
 
 	/**
+	 * For the fonts in CSS to be applied when rendering images on canvas, the actual
+	 * font data must be made available via a data URI encoding of the file.
+	 */
+    EditorUi.prototype.embedCssFonts = function(fontCss, then)
+    {
+        var parts = fontCss.split('url(');
+        var waiting = 0;
+        
+        if (this.cachedFonts == null) 
+        {
+        	this.cachedFonts = {};
+        }
+
+        // Strips leading and trailing quotes and spaces
+        function trimString(str)
+        {
+            return str.replace(new RegExp("^[\\s\"']+", "g"), "").replace(new RegExp("[\\s\"']+$", "g"), "");
+        };
+        
+        var finish = mxUtils.bind(this, function()
+        {
+            if (waiting == 0)
+            {
+                // Constructs string
+                var result = [parts[0]];
+                
+                for (var j = 1; j < parts.length; j++)
+                {
+                    var idx = parts[j].indexOf(')');
+                    result.push('url("');
+                    result.push(this.cachedFonts[trimString(parts[j].substring(0, idx))]);
+                    result.push('"' + parts[j].substring(idx));
+                }
+                
+                then(result.join(''));
+            }
+        });
+        
+        if (parts.length > 0)
+        {
+            for (var i = 1; i < parts.length; i++)
+            {
+                var idx = parts[i].indexOf(')');
+                var format = null;
+                
+                // Checks if there is a format directive
+                var fmtIdx = parts[i].indexOf('format(', idx);
+                
+                if (fmtIdx > 0)
+                {
+                    format = trimString(parts[i].substring(fmtIdx + 7, parts[i].indexOf(')', fmtIdx)));
+                }
+
+                (mxUtils.bind(this, function(url)
+                {
+                    if (this.cachedFonts[url] == null)
+                    {
+                        // Mark font as being fetched and fetch it
+                    	this.cachedFonts[url] = url;
+                        waiting++;
+                        
+                        var mime = 'application/x-font-ttf';
+                        
+                        // See https://stackoverflow.com/questions/2871655/proper-mime-type-for-fonts
+                        if (format == 'svg' || /(\.svg)($|\?)/i.test(url))
+                        {
+                            mime = 'image/svg+xml';
+                        }
+                        else if (format == 'otf' || format == 'embedded-opentype' || /(\.otf)($|\?)/i.test(url))
+                        {
+                            mime = 'application/x-font-opentype';
+                        }
+                        else if (format == 'woff' || /(\.woff)($|\?)/i.test(url))
+                        {
+                            mime = 'application/font-woff';
+                        }
+                        else if (format == 'woff2' || /(\.woff2)($|\?)/i.test(url))
+                        {
+                            mime = 'application/font-woff2';
+                        }
+                        else if (format == 'eot' || /(\.eot)($|\?)/i.test(url))
+                        {
+                            mime = 'application/vnd.ms-fontobject';
+                        }
+                        else if (format == 'sfnt' || /(\.sfnt)($|\?)/i.test(url))
+                        {
+                            mime = 'application/font-sfnt';
+                        }
+                        
+                        var realUrl = url;
+                        
+                        if ((/^https?:\/\//.test(realUrl)) && !this.editor.isCorsEnabledForUrl(realUrl))
+                        {
+                            realUrl = PROXY_URL + '?url=' + encodeURIComponent(url);
+                        }
+
+                        // LATER: Remove cache-control header
+                        this.loadUrl(realUrl, mxUtils.bind(this, function(uri)
+                        {
+                        	this.cachedFonts[url] = uri;
+                            waiting--;
+                            finish();
+                        }), mxUtils.bind(this, function(err)
+                        {
+                            // LATER: handle error
+                            waiting--;
+                            finish();
+                        }), true, null, 'data:' + mime + ';charset=utf-8;base64,');
+                    }
+                }))(trimString(parts[i].substring(0, idx)), format);
+            }
+            
+            //In case all fonts are cached
+            finish();
+        }
+        else
+    	{
+        	//No font urls found
+        	then(fontCss);
+    	}
+    };
+	
+	/**
 	 * For the fontCSS to be applied when rendering images on canvas, the actual
 	 * font data must be made available via a data URI encoding of the file.
 	 */
@@ -6199,117 +6498,89 @@
     {
         if (this.editor.fontCss != null && this.editor.resolvedFontCss == null)
         {
-            var parts = this.editor.fontCss.split('url(');
-            var waiting = 0;
-            var fonts = {};
-
-            // Strips leading and trailing quotes and spaces
-            function trimString(str)
-            {
-                return str.replace(new RegExp("^[\\s\"']+", "g"), "").replace(new RegExp("[\\s\"']+$", "g"), "");
-            };
-            
-            var finish = mxUtils.bind(this, function()
-            {
-                if (waiting == 0)
-                {
-                    // Constructs string
-                    var result = [parts[0]];
-                    
-                    for (var j = 1; j < parts.length; j++)
-                    {
-                        var idx = parts[j].indexOf(')');
-                        result.push('url("');
-                        result.push(fonts[trimString(parts[j].substring(0, idx))]);
-                        result.push('"' + parts[j].substring(idx));
-                    }
-                    
-                    this.editor.resolvedFontCss = result.join('');
-                    then();
-                }
-            });
-            
-            if (parts.length > 0)
-            {
-                for (var i = 1; i < parts.length; i++)
-                {
-                    var idx = parts[i].indexOf(')');
-                    var format = null;
-                    
-                    // Checks if there is a format directive
-                    var fmtIdx = parts[i].indexOf('format(', idx);
-                    
-                    if (fmtIdx > 0)
-                    {
-                        format = trimString(parts[i].substring(fmtIdx + 7, parts[i].indexOf(')', fmtIdx)));
-                    }
-    
-                    (mxUtils.bind(this, function(url)
-                    {
-                        if (fonts[url] == null)
-                        {
-                            // Mark font es being fetched and fetch it
-                            fonts[url] = url;
-                            waiting++;
-                            
-                            var mime = 'application/x-font-ttf';
-                            
-                            // See https://stackoverflow.com/questions/2871655/proper-mime-type-for-fonts
-                            if (format == 'svg' || /(\.svg)($|\?)/i.test(url))
-                            {
-                                mime = 'image/svg+xml';
-                            }
-                            else if (format == 'otf' || format == 'embedded-opentype' || /(\.otf)($|\?)/i.test(url))
-                            {
-                                mime = 'application/x-font-opentype';
-                            }
-                            else if (format == 'woff' || /(\.woff)($|\?)/i.test(url))
-                            {
-                                mime = 'application/font-woff';
-                            }
-                            else if (format == 'woff2' || /(\.woff2)($|\?)/i.test(url))
-                            {
-                                mime = 'application/font-woff2';
-                            }
-                            else if (format == 'eot' || /(\.eot)($|\?)/i.test(url))
-                            {
-                                mime = 'application/vnd.ms-fontobject';
-                            }
-                            else if (format == 'sfnt' || /(\.sfnt)($|\?)/i.test(url))
-                            {
-                                mime = 'application/font-sfnt';
-                            }
-                            
-                            var realUrl = url;
-                            
-                            if ((/^https?:\/\//.test(realUrl)) && !this.editor.isCorsEnabledForUrl(realUrl))
-                            {
-                                realUrl = PROXY_URL + '?url=' + encodeURIComponent(url);
-                            }
-
-                            // LATER: Remove cache-control header
-                            this.loadUrl(realUrl, mxUtils.bind(this, function(uri)
-                            {
-                                fonts[url] = uri;
-                                waiting--;
-                                finish();
-                            }), mxUtils.bind(this, function(err)
-                            {
-                                // LATER: handle error
-                                waiting--;
-                                finish();
-                            }), true, null, 'data:' + mime + ';charset=utf-8;base64,');
-                        }
-                    }))(trimString(parts[i].substring(0, idx)), format);
-                }
-            }
+        	this.embedCssFonts(this.editor.fontCss, mxUtils.bind(this, function(resolvedFontCss)
+			{
+        		this.editor.resolvedFontCss = resolvedFontCss;
+        		then();
+			}));
         }
         else
         {
             then();
         }
     };
-	
+    
+    /**
+     * Embeds extrnal fonts
+     */
+    EditorUi.prototype.embedExtFonts = function(callback)
+    {
+    	var extFonts = this.editor.graph.extFonts; 
+    	
+		if (extFonts != null && extFonts.length > 0)
+		{
+			var styleCnt = '', waiting = 0;
+			
+			if (this.cachedGoogleFonts == null)
+			{
+				this.cachedGoogleFonts = {};
+			}
+			
+			var googleCssDone = mxUtils.bind(this, function()
+			{
+				if (waiting == 0)
+	            {
+					this.embedCssFonts(styleCnt, callback);
+	            }
+			});
+			
+			for (var i = 0; i < extFonts.length; i++)
+			{
+				(mxUtils.bind(this, function(fontName, fontUrl)
+				{
+					if (fontUrl.indexOf(Editor.GOOGLE_FONTS) == 0)
+					{
+						if (this.cachedGoogleFonts[fontUrl] == null)
+						{
+							waiting++;
+							
+							this.loadUrl(fontUrl, mxUtils.bind(this, function(css)
+		                    {
+								this.cachedGoogleFonts[fontUrl] = css;
+								styleCnt += css;
+		                        waiting--;
+		                        googleCssDone();
+		                    }), mxUtils.bind(this, function(err)
+		                    {
+		                        // LATER: handle error
+		                        waiting--;
+		                        styleCnt += '@import url(' + fontUrl + ');';
+		                        googleCssDone();
+		                    }));
+						}
+						else
+						{
+							styleCnt += this.cachedGoogleFonts[fontUrl];
+						}
+					}
+					else
+					{
+						styleCnt += '@font-face {' +
+				            'font-family: "'+ fontName +'";' + 
+				            'src: url("'+ fontUrl +'");' + 
+				            '}';
+					}
+				}))(extFonts[i].name, extFonts[i].url);
+			}
+			
+			googleCssDone();
+		}
+		else
+		{
+			callback();
+		}
+    };
+    
 	/**
 	 *
 	 */
@@ -6344,138 +6615,186 @@
 			this.convertImages(graph.getSvg(null, null, null, noCrop, null, ignoreSelection, null, null, null, addShadow),
 				mxUtils.bind(this, function(svgRoot)
 			{
-				var img = new Image();
-				
-				img.onload = mxUtils.bind(this, function()
+				try
 				{
-			   		try
-			   		{
-			   			var canvas = document.createElement('canvas');
-						var w = parseInt(svgRoot.getAttribute('width'));
-						var h = parseInt(svgRoot.getAttribute('height'));
-						scale = (scale != null) ? scale : 1;
-						
-						if (width != null)
-						{
-							scale = (!limitHeight) ? width / w : Math.min(1, Math.min((width * 3) / (h * 4), width / w));
-						}
-						
-						w = Math.ceil(scale * w) + 2 * border;
-						h = Math.ceil(scale * h) + 2 * border;
-						
-						canvas.setAttribute('width', w);
-				   		canvas.setAttribute('height', h);
-				   		var ctx = canvas.getContext('2d');
-				   		
-				   		if (bg != null)
+					var img = new Image();
+					
+					img.onload = mxUtils.bind(this, function()
+					{
+				   		try
 				   		{
-				   			ctx.beginPath();
-							ctx.rect(0, 0, w, h);
-							ctx.fillStyle = bg;
-							ctx.fill();
-				   		}
-	
-					    ctx.scale(scale, scale);
-
-					    function drawImage()
-					    {
-					    	// Workaround for broken data URI images in Safari on first export
-					   		if (mxClient.IS_SF)
-					   		{			   		
-								window.setTimeout(function()
-								{
-									ctx.drawImage(img, border / scale, border / scale);
-									callback(canvas);
-								}, 0);
-					   		}
-					   		else
-					   		{
-					   			ctx.drawImage(img, border / scale, border / scale);
-					   			callback(canvas);
-					   		}
-					    };
-					    
-					    if (grid)
-					    {
-						    var view = graph.view;
-							var gridImage = btoa(unescape(encodeURIComponent(view.createSvgGrid(view.gridColor))));
-							gridImage = 'data:image/svg+xml;base64,' + gridImage;
-			                var phase = graph.gridSize * view.gridSteps * scale;
-			                
-			                var b = graph.getGraphBounds();
-							var x0 = b.x * scale;
-							var y0 = b.y * scale;
+				   			var canvas = document.createElement('canvas');
+							var w = parseInt(svgRoot.getAttribute('width'));
+							var h = parseInt(svgRoot.getAttribute('height'));
+							scale = (scale != null) ? scale : 1;
 							
-							var background = new Image();
-							background.src = gridImage;
-	
-							background.onload = function()
+							if (width != null)
 							{
-								var x = -Math.round(phase - mxUtils.mod(view.translate.x * scale - x0, phase));
-								var y = -Math.round(phase - mxUtils.mod(view.translate.y * scale - y0, phase));
-	
-								for (var i = x; i < w; i += phase)
-								{
-									for (var j = y; j < h; j += phase)
-									{
-										ctx.drawImage(background, i / scale, j / scale);	
-									}
-								}
+								scale = (!limitHeight) ? width / w : Math.min(1, Math.min((width * 3) / (h * 4), width / w));
+							}
 							
-								drawImage();
-							};
-					    }
-					    else
-				    	{
-					    	drawImage();
-				    	}
-			   		}
-			   		catch (e)
-			   		{
-			   			if (error != null)
+							w = Math.ceil(scale * w) + 2 * border;
+							h = Math.ceil(scale * h) + 2 * border;
+							
+							canvas.setAttribute('width', w);
+					   		canvas.setAttribute('height', h);
+					   		var ctx = canvas.getContext('2d');
+					   		
+					   		if (bg != null)
+					   		{
+					   			ctx.beginPath();
+								ctx.rect(0, 0, w, h);
+								ctx.fillStyle = bg;
+								ctx.fill();
+					   		}
+		
+						    ctx.scale(scale, scale);
+	
+						    function drawImage()
+						    {
+						    	// Workaround for broken data URI images in Safari on first export
+						   		if (mxClient.IS_SF)
+						   		{			   		
+									window.setTimeout(function()
+									{
+										ctx.drawImage(img, border / scale, border / scale);
+										callback(canvas);
+									}, 0);
+						   		}
+						   		else
+						   		{
+						   			ctx.drawImage(img, border / scale, border / scale);
+						   			callback(canvas);
+						   		}
+						    };
+						    
+						    if (grid)
+						    {
+							    var view = graph.view;
+							    var curViewScale = view.scale;
+							    view.scale = 1; //Reset the scale temporary to generate unscaled grid image which is then scaled
+								var gridImage = btoa(unescape(encodeURIComponent(view.createSvgGrid(view.gridColor))));
+								view.scale = curViewScale;
+								gridImage = 'data:image/svg+xml;base64,' + gridImage;
+				                var phase = graph.gridSize * view.gridSteps * scale;
+				                
+				                var b = graph.getGraphBounds();
+								var tx = view.translate.x * curViewScale;
+								var ty = view.translate.y * curViewScale;
+								var x0 = tx + (b.x - tx) / curViewScale;
+								var y0 = ty + (b.y - ty) / curViewScale;
+								
+								var background = new Image();
+		
+								background.onload = function()
+								{
+									try
+									{
+										var x = -Math.round(phase - mxUtils.mod((tx - x0) * scale, phase));
+										var y = -Math.round(phase - mxUtils.mod((ty - y0) * scale, phase));
+			
+										for (var i = x; i < w; i += phase)
+										{
+											for (var j = y; j < h; j += phase)
+											{
+												ctx.drawImage(background, i / scale, j / scale);	
+											}
+										}
+									
+										drawImage();
+									}
+							   		catch (e)
+							   		{
+							   			if (error != null)
+										{
+											error(e);
+										}
+							   		}
+								};
+								
+								background.onerror = function(e)
+								{
+									if (error != null)
+									{
+										error(e);
+									}
+								};
+								
+								background.src = gridImage;
+						    }
+						    else
+					    	{
+						    	drawImage();
+					    	}
+				   		}
+				   		catch (e)
+				   		{
+				   			if (error != null)
+							{
+								error(e);
+							}
+				   		}
+					});
+					
+					img.onerror = function(e)
+					{
+						//console.log('img', e, img.src);
+						
+						if (error != null)
 						{
 							error(e);
 						}
-			   		}
-				});
-				
-				img.onerror = function(e)
-				{
-					//console.log('img', e, img.src);
-					
-					if (error != null)
-					{
-						error(e);
-					}
-				};
-	
-				try
-				{
+					};
+
 					if (addShadow)
 					{
 						this.editor.graph.addSvgShadow(svgRoot);
 					}
 					
+					if (this.editor.graph.mathEnabled)
+					{
+						this.editor.addMathCss(svgRoot);
+					}
+					
 					var done = mxUtils.bind(this, function()
 					{
-						if (this.editor.resolvedFontCss != null)
+						try
 						{
-							var st = document.createElement('style');
-							st.setAttribute('type', 'text/css');
-							st.innerHTML = this.editor.resolvedFontCss;
+							if (this.editor.resolvedFontCss != null)
+							{
+								this.editor.addFontCss(svgRoot, this.editor.resolvedFontCss);
+							}
 							
-							// Must be in defs section for FF to work
-							var defs = svgRoot.getElementsByTagName('defs');
-							defs[0].appendChild(st);
-						}
-						
-						this.convertMath(graph, svgRoot, mxUtils.bind(this, function()
-						{
 							img.src = this.createSvgDataUri(mxUtils.getXml(svgRoot));
-						}));
+						}
+						catch (e)
+						{
+							if (error != null)
+							{
+								error(e);
+							}
+						}
 					});
 					
-					this.loadFonts(done);
+					this.embedExtFonts(mxUtils.bind(this, function(extFontsEmbeddedCss)
+					{
+						try
+						{
+							if (extFontsEmbeddedCss != null)
+							{
+								this.editor.addFontCss(svgRoot, extFontsEmbeddedCss);
+							}
+							
+							this.loadFonts(done);
+						}
+						catch (e)
+						{
+							if (error != null)
+							{
+								error(e);
+							}
+						}
+					}));
 				}
 				catch (e)
 				{
@@ -6635,12 +6954,13 @@
 	/**
 	 * Checks if the client is authorized and calls the next step.
 	 */
-	EditorUi.prototype.loadUrl = function(url, success, error, forceBinary, retry, dataUriPrefix, noBinary)
+	EditorUi.prototype.loadUrl = function(url, success, error, forceBinary, retry, dataUriPrefix, noBinary, headers)
 	{
 		try
 		{
 			var binary = !noBinary && (forceBinary || /(\.png)($|\?)/i.test(url) ||
-				/(\.jpe?g)($|\?)/i.test(url) || /(\.gif)($|\?)/i.test(url));
+				/(\.jpe?g)($|\?)/i.test(url) || /(\.gif)($|\?)/i.test(url) ||
+				/(\.pdf)($|\?)/i.test(url));
 			retry = (retry != null) ? retry : true;
 			
 			var fn = mxUtils.bind(this, function()
@@ -6676,13 +6996,21 @@
 								dataUriPrefix = (dataUriPrefix != null) ? dataUriPrefix : 'data:image/png;base64,';
 								data = dataUriPrefix + this.base64Encode(data);
 							}
-				    		
+							
 				    		success(data);
 				    	}
 					}
 					else if (error != null)
 			    	{
-			    		error({message: mxResources.get('error') + ' ' + req.getStatus()}, req);
+						if (req.getStatus() == 0)
+						{
+							// Handles CORS errors
+							error({message: mxResources.get('accessDenied')}, req);
+						}
+						else
+						{
+							error({message: mxResources.get('error') + ' ' + req.getStatus()}, req);
+						}
 			    	}
 				}), function(req)
 				{
@@ -6696,7 +7024,7 @@
 					{
 						error({code: App.ERROR_TIMEOUT, retry: fn});
 					}
-			    });
+			    }, headers);
 			});
 			
 			fn();
@@ -6833,6 +7161,7 @@
 				try
 				{
 					var doc = mxUtils.parseXml(xml);
+					var mapping = {};
 					
 					// Checks for mxfile with multiple pages
 					var node = this.editor.extractGraphModel(doc.documentElement, this.pages != null);
@@ -6840,20 +7169,25 @@
 					if (node != null && node.nodeName == 'mxfile' && this.pages != null)
 					{
 						var diagrams = node.getElementsByTagName('diagram');
-	
+
 						if (diagrams.length == 1)
 						{
 							node = Editor.parseDiagramNode(diagrams[0]);
+							
+							if (this.currentPage != null)
+							{
+								mapping[diagrams[0].getAttribute('id')] = this.currentPage.getId();
+							}
 						}
 						else if (diagrams.length > 1)
 						{
-							var mapping = {};
 							var pages = [];
 							var i0 = 0;
 							
 							// Adds first page to current page if current page is only page and empty
 							if (this.pages != null && this.pages.length == 1 && this.isDiagramEmpty())
 							{
+								mapping[diagrams[0].getAttribute('id')] = this.pages[0].getId();
 								node = Editor.parseDiagramNode(diagrams[0]);
 								crop = false;
 								i0 = 1;
@@ -6887,6 +7221,14 @@
 					if (node != null && node.nodeName === 'mxGraphModel')
 					{
 						cells = graph.importGraphModel(node, dx, dy, crop);
+						
+						if (cells != null)
+						{
+							for (var i = 0; i < cells.length; i++)
+							{
+								this.updatePageLinksForCell(mapping, cells[i]);
+							}
+						}
 					}
 				}
 				finally
@@ -6929,7 +7271,7 @@
 		var temp = document.createElement('div');
 		var graph = this.editor.graph;
 		var href = graph.getLinkForCell(cell);
-		
+
 		if (href != null)
 		{
 			graph.setLinkForCell(cell, this.updatePageLink(mapping, href));
@@ -7026,6 +7368,7 @@
 	 */
 	EditorUi.prototype.importVisio = function(file, done, onerror, filename)
 	{
+		//A reduced version of this code is used in conf/jira plugins, review that code whenever this function is changed
 		filename = (filename != null) ? filename : file.name; 
 
 		onerror = (onerror != null) ? onerror : mxUtils.bind(this, function(e)
@@ -7062,7 +7405,7 @@
 				
 				if (remote) 
 				{
-					if (VSD_CONVERT_URL != null)
+					if (VSD_CONVERT_URL != null && !this.isOffline())
 					{
 						var formData = new FormData();
 						formData.append('file1', file, filename);
@@ -7257,6 +7600,7 @@
 				{
 					EditorUi.logEvent({category: 'LUCIDCHART-IMPORT-FILE',
 						action: 'size_' + data.length});
+					EditorUi.debug('convertLucidChart', data);
 				}
 				catch (e)
 				{
@@ -7304,6 +7648,82 @@
 		}
 	};
 
+	/**
+	 * Generates a Mermaid image.
+	 */
+	EditorUi.prototype.generateMermaidImage = function(data, config, success, error)
+	{
+		var ui = this;
+		
+		var delayed = function()
+		{
+			try
+			{
+				this.loadingMermaid = false;
+				
+				config = (config != null) ? config : EditorUi.defaultMermaidConfig;
+				config.securityLevel = 'strict';
+				config.startOnLoad = false;
+				
+				mermaid.mermaidAPI.initialize(config);
+	    		
+				mermaid.mermaidAPI.render('geMermaidOutput-' + new Date().getTime(), data, function(svg)
+				{
+					try
+					{
+						// Workaround for namespace errors in SVG output for IE
+						if (mxClient.IS_IE || mxClient.IS_IE11)
+						{
+							svg = svg.replace(/ xmlns:\S*="http:\/\/www.w3.org\/XML\/1998\/namespace"/g, '').
+								replace(/ (NS xml|\S*):space="preserve"/g, ' xml:space="preserve"');
+						}
+						
+						var doc = mxUtils.parseXml(svg);
+						var svgs = doc.getElementsByTagName('svg');
+
+						if (svgs.length > 0)
+						{
+							var w = parseFloat(svgs[0].getAttribute('width'));
+							var h = parseFloat(svgs[0].getAttribute('height'));
+							
+							success(ui.convertDataUri(ui.createSvgDataUri(svg)), w, h);
+						}
+						else
+						{
+							error({message: mxResources.get('invalidInput')});
+						}
+					}
+					catch (e)
+					{
+						error(e);
+					}
+				});
+			}
+			catch (e)
+			{
+				error(e);
+			}
+		};
+
+		if (typeof mermaid === 'undefined' && !this.loadingMermaid && !this.isOffline(true))
+		{
+			this.loadingMermaid = true;
+			
+			if (urlParams['dev'] == '1')
+			{
+				mxscript('js/mermaid/mermaid.min.js', delayed);
+			}
+			else
+			{
+				mxscript('js/extensions.min.js', delayed);
+			}
+		}
+		else
+		{
+			delayed();
+		}
+	};
+	
 	/**
 	 * Generates a plant UML image. Possible types are svg, png and txt.
 	 */
@@ -7420,26 +7840,33 @@
 
 						img.onload = function()
 						{
-							var w = img.width;
-							var h = img.height;
-
-							// Workaround for 0 image size in IE11
-							if (w == 0 && h == 0)
+							try
 							{
-								var data = reader.result;
-								var comma = data.indexOf(',');
-								var svgText = decodeURIComponent(escape(atob(data.substring(comma + 1))));
-								var root = mxUtils.parseXml(svgText);
-								var svgs = root.getElementsByTagName('svg');
-
-								if (svgs.length > 0)
+								var w = img.width;
+								var h = img.height;
+	
+								// Workaround for 0 image size in IE11
+								if (w == 0 && h == 0)
 								{
-									w = parseFloat(svgs[0].getAttribute('width'));
-									h = parseFloat(svgs[0].getAttribute('height'));
+									var data = reader.result;
+									var comma = data.indexOf(',');
+									var svgText = decodeURIComponent(escape(atob(data.substring(comma + 1))));
+									var root = mxUtils.parseXml(svgText);
+									var svgs = root.getElementsByTagName('svg');
+	
+									if (svgs.length > 0)
+									{
+										w = parseFloat(svgs[0].getAttribute('width'));
+										h = parseFloat(svgs[0].getAttribute('height'));
+									}
 								}
+								
+								success(reader.result, w, h);
 							}
-							
-							success(reader.result, w, h);
+							catch (e)
+							{
+								error(e);
+							}
 						};
 
 						img.src = reader.result;
@@ -7521,15 +7948,25 @@
 			{
 				var graph = this.editor.graph;
 				
+				// Checks for embedded XML in PDF
+				if (text.substring(0, 28) == 'data:application/pdf;base64,')
+	    		{
+					var xml = Editor.extractGraphModelFromPdf(text);
+					
+					if (xml != null && xml.length > 0)
+					{
+						return this.importXml(xml, dx, dy, crop, true);
+					}
+	    		}
+				
 				// Checks for embedded XML in PNG
 				if (text.substring(0, 22) == 'data:image/png;base64,')
 				{
 					var xml = this.extractGraphModelFromPng(text);
-					var result = this.importXml(xml, dx, dy, crop, true); 
 					
-					if (result.length > 0)
+					if (xml != null && xml.length > 0)
 					{
-						return result;
+						return this.importXml(xml, dx, dy, crop, true);
 					}
 				}
 				
@@ -7623,6 +8060,20 @@
 						{
 							this.editor.graph.setSelectionCells(
 								this.importXml(xml, dx, dy, crop));
+							
+							if (!this.isOffline() &&
+								(/.*\.diagrams\.net$/.test(window.location.hostname) ||
+								/.*\.appspot\.com$/.test(window.location.hostname) ||
+								/.*\.draw\.io$/.test(window.location.hostname)))
+							{
+								this.showBanner('LucidChartImportSurvey', mxResources.get('notSatisfiedWithImport'),
+									mxUtils.bind(this, function()
+								{
+									var dlg = new FeedbackDialog(this, 'Lucidchart Import Feedback', true, text);
+									this.showDialog(dlg.container, 610, 360, true, false);
+									dlg.init();
+								}));
+							}
 						}), mxUtils.bind(this, function(e)
 						{
 							this.handleError(e);
@@ -7639,7 +8090,7 @@
 				    		// Fires cellsInserted to apply the current style to the inserted text.
 				    		// This requires the value to be empty when the event is fired.
 				    		cell = graph.insertVertex(graph.getDefaultParent(), null, '',
-								graph.snap(dx), graph.snap(dy), 1, 1, 'text;' + ((html) ? 'html=1;' : ''));
+								graph.snap(dx), graph.snap(dy), 1, 1, 'text;whiteSpace=wrap;' + ((html) ? 'html=1;' : ''));
 				    		graph.fireEvent(new mxEventObject('textInserted', 'cells', [cell]));
 						
 				    		// Single tag is converted
@@ -7659,6 +8110,14 @@
 							// Apply value and updates the cell size to fit the text block
 							cell.value = text;
 							graph.updateCellSize(cell);
+							
+							// Adds wrapping for large text blocks
+							if (this.maxTextWidth > 0 && cell.geometry.width > this.maxTextWidth)
+							{
+								var size = graph.getPreferredSizeForCell(cell, this.maxTextWidth);
+								cell.geometry.width = size.width;
+								cell.geometry.height = size.height;
+							}
 							
 							// See http://stackoverflow.com/questions/6927719/url-regex-does-not-work-in-javascript
 							var regexp = /\b((?:[a-z][\w-]+:(?:\/{1,3}|[a-z0-9%])|www\d{0,3}[.]|[a-z0-9.\-]+[.][a-z]{2,4}\/)(?:[^\s()<>]+|\(([^\s()<>]+|(\([^\s()<>]+\)))*\))+(?:\(([^\s()<>]+|(\([^\s()<>]+\)))*\)|[^\s`!()\[\]{};:'".,<>?«»“”‘’]))/i;
@@ -8110,15 +8569,16 @@
 	/**
 	 * 
 	 */
-	EditorUi.prototype.importFiles = function(files, x, y, maxSize, fn, resultFn, filterFn, barrierFn, resizeDialog, maxBytes, resampleThreshold, ignoreEmbeddedXml)
+	EditorUi.prototype.importFiles = function(files, x, y, maxSize, fn, resultFn, filterFn, barrierFn,
+		resizeDialog, maxBytes, resampleThreshold, ignoreEmbeddedXml)
 	{
-		x = (x != null) ? x : 0;
-		y = (y != null) ? y : 0;
 		maxSize = (maxSize != null) ? maxSize : this.maxImageSize;
 		maxBytes = (maxBytes != null) ? maxBytes : this.maxImageBytes;
 		
 		var crop = x != null && y != null;
 		var resizeImages = true;
+		x = (x != null) ? x : 0;
+		y = (y != null) ? y : 0;
 		
 		// Checks if large images are imported
 		var largeImages = false;
@@ -8145,16 +8605,25 @@
 	
 			fn = (fn != null) ? fn : mxUtils.bind(this, function(data, mimeType, x, y, w, h, filename, done, file)
 			{
-				if (data != null && data.substring(0, 10) == '<mxlibrary')
+				try
 				{
-					this.spinner.stop();
-					this.loadLibrary(new LocalLibrary(this, data, filename));
-	    			
-	    			return null;
+					if (data != null && data.substring(0, 10) == '<mxlibrary')
+					{
+						this.spinner.stop();
+						this.loadLibrary(new LocalLibrary(this, data, filename));
+		    			
+		    			return null;
+					}
+					else
+					{
+						return this.importFile(data, mimeType, x, y, w, h, filename, done, file, crop, ignoreEmbeddedXml);
+					}
 				}
-				else
+				catch (e)
 				{
-					return this.importFile(data, mimeType, x, y, w, h, filename, done, file, crop, ignoreEmbeddedXml);
+					this.handleError(e);
+					
+					return null;
 				}
 			});
 			
@@ -8223,7 +8692,7 @@
 							{
 								if (filterFn == null || filterFn(file))
 								{
-						    		if (file.type.substring(0, 6) == 'image/')
+									if (file.type.substring(0, 6) == 'image/')
 						    		{
 						    			if (file.type.substring(0, 9) == 'image/svg')
 						    			{
@@ -8446,7 +8915,9 @@
 						    		}
 						    		else
 						    		{
-										fn(e.target.result, file.type, x + index * gs, y + index * gs, 240, 160, file.name, function(cells)
+						    			var data = e.target.result;
+						    			
+										fn(data, file.type, x + index * gs, y + index * gs, 240, 160, file.name, function(cells)
 										{
 											barrier(index, function()
 				    	    				{
@@ -8468,7 +8939,7 @@
 		    	    				});
 								}, file);
 							}
-							else if (file.type.substring(0, 5) == 'image')
+							else if (file.type.substring(0, 5) == 'image' || file.type == 'application/pdf')
 							{
 								reader.readAsDataURL(file);
 							}
@@ -8817,13 +9288,16 @@
 			
 			img.onload = function()
 			{
+				img.width = (img.width > 0) ? img.width : 120;
+				img.height = (img.height > 0) ? img.height : 120;
+				
 				onload(img);
-			}
+			};
 			
 			if (onerror != null)
 			{
 				img.onerror = onerror;
-			}
+			};
 			
 			img.src = uri;
 		}
@@ -8855,70 +9329,141 @@
 		var ui = this;
 		var graph = this.editor.graph;
 		
+		// Starts editing PlantUML data
+		graph.cellEditor.editPlantUmlData = function(cell, trigger, data)
+		{
+			var obj = JSON.parse(data);
+			
+	    	var dlg = new TextareaDialog(ui, mxResources.get('plantUml') + ':',
+	    		obj.data, function(text)
+			{
+	    		if (text != null)
+				{
+	    			if (ui.spinner.spin(document.body, mxResources.get('inserting')))
+	    			{
+	    				ui.generatePlantUmlImage(text, obj.format, function(data, w, h)
+	    				{
+	    					ui.spinner.stop();
+
+	    					graph.getModel().beginUpdate();
+	    					try
+	    					{
+	    						if (obj.format == 'txt')
+		    					{
+		    						graph.labelChanged(cell, '<pre>' + data + '</pre>');
+		    						graph.updateCellSize(cell, true);
+		    					}
+	    						else
+	    						{
+	    							graph.setCellStyles('image', ui.convertDataUri(data), [cell]);
+	    							var geo = graph.model.getGeometry(cell);
+	    							
+	    							if (geo != null)
+	    							{
+	    								geo = geo.clone();
+	    								geo.width = w;
+	    								geo.height = h;
+	    								graph.cellsResized([cell], [geo], false);
+	    							}
+	    						}
+	    						
+	    						graph.setAttributeForCell(cell, 'plantUmlData',
+		    						JSON.stringify({data: text, format: obj.format}));
+	    					}
+	    					finally
+	    					{
+	    						graph.getModel().endUpdate();
+	    					}
+	    				}, function(e)
+	    				{
+	    					ui.handleError(e);
+	    				});
+	    			}
+				}
+			}, null, null, 400, 220);
+			ui.showDialog(dlg.container, 420, 300, true, true);
+			dlg.init();
+		};
+		
+		// Starts editing Mermaid data
+		graph.cellEditor.editMermaidData = function(cell, trigger, data)
+		{
+			var obj = JSON.parse(data);
+			
+	    	var dlg = new TextareaDialog(ui, mxResources.get('mermaid') + ':',
+	    		obj.data, function(text)
+			{
+	    		if (text != null)
+				{
+	    			if (ui.spinner.spin(document.body, mxResources.get('inserting')))
+	    			{
+	    				ui.generateMermaidImage(text, obj.config, function(data, w, h)
+	    				{
+	    					ui.spinner.stop();
+
+	    					graph.getModel().beginUpdate();
+	    					try
+	    					{
+	    						graph.setCellStyles('image', data, [cell]);
+    							var geo = graph.model.getGeometry(cell);
+    							
+    							if (geo != null)
+    							{
+    								geo = geo.clone();
+    								geo.width = Math.max(geo.width, w);
+    								geo.height = Math.max(geo.height, h);
+    								graph.cellsResized([cell], [geo], false);
+    							}
+	    						
+	    						graph.setAttributeForCell(cell, 'mermaidData',
+		    						JSON.stringify({data: text, config:
+		    						obj.config}, null, 2));
+	    					}
+	    					finally
+	    					{
+	    						graph.getModel().endUpdate();
+	    					}
+	    				}, function(e)
+	    				{
+	    					ui.handleError(e);
+	    				});
+	    			}
+				}
+			}, null, null, 400, 220);
+			ui.showDialog(dlg.container, 420, 300, true, true);
+			dlg.init();
+		};
+		
 		// Overrides function to add editing for Plant UML.
 		var cellEditorStartEditing = graph.cellEditor.startEditing;
 		
 		graph.cellEditor.startEditing = function(cell, trigger)
 		{
-			var data = this.graph.getAttributeForCell(cell, 'plantUmlData');
-			
-			if (data != null)
+			try
 			{
-				var obj = JSON.parse(data);
+				var data = this.graph.getAttributeForCell(cell, 'plantUmlData');
 				
-		    	var dlg = new TextareaDialog(ui, mxResources.get('plantUml') + ':',
-		    		obj.data, function(text)
+				if (data != null)
 				{
-		    		if (text != null)
+					this.editPlantUmlData(cell, trigger, data);
+				}
+				else
+				{
+					data = this.graph.getAttributeForCell(cell, 'mermaidData');
+				
+					if (data != null)
 					{
-		    			if (ui.spinner.spin(document.body, mxResources.get('inserting')))
-		    			{
-		    				ui.generatePlantUmlImage(text, obj.format, function(data, w, h)
-		    				{
-		    					ui.spinner.stop();
-
-		    					graph.getModel().beginUpdate();
-		    					try
-		    					{
-		    						if (obj.format == 'txt')
-			    					{
-			    						graph.labelChanged(cell, '<pre>' + data + '</pre>');
-			    						graph.updateCellSize(cell, true);
-			    					}
-		    						else
-		    						{
-		    							graph.setCellStyles('image', ui.convertDataUri(data), [cell]);
-		    							var geo = graph.model.getGeometry(cell);
-		    							
-		    							if (geo != null)
-		    							{
-		    								geo = geo.clone();
-		    								geo.width = w;
-		    								geo.height = h;
-		    								graph.cellsResized([cell], [geo], false);
-		    							}
-		    						}
-		    						
-		    						graph.setAttributeForCell(cell, 'plantUmlData',
-			    						JSON.stringify({data: text, format: obj.format}));
-		    					}
-		    					finally
-		    					{
-		    						graph.getModel().endUpdate();
-		    					}
-		    				}, function(e)
-		    				{
-		    					ui.handleError(e);
-		    				});
-		    			}
+						this.editMermaidData(cell, trigger, data);
 					}
-				}, null, null, 400, 220);
-				ui.showDialog(dlg.container, 420, 300, true, true);
-				dlg.init();
+					else
+					{
+						cellEditorStartEditing.apply(this, arguments);
+					}
+				}
 			}
-			else
+			catch (e)
 			{
-				cellEditorStartEditing.apply(this, arguments);
+				ui.handleError(e);
 			}
 		};
 		
@@ -9043,7 +9588,7 @@
 		{
 			ui.showDialog(new PrintDialog(ui).container, 360,
 				(ui.pages != null && ui.pages.length > 1) ?
-				420 : 360, true, true);
+				450 : 370, true, true);
 		};
 
 		// Specifies the default filename
@@ -9055,6 +9600,12 @@
 		graph.getExportVariables = function()
 		{
 			var vars = graphGetExportVariables.apply(this, arguments);
+			var file = ui.getCurrentFile();
+			
+			if (file != null)
+			{
+				vars['filename'] = file.getTitle();
+			}
 			
 			vars['pagecount'] = (ui.pages != null) ? ui.pages.length : 1;
 			vars['page'] = (ui.currentPage != null) ? ui.currentPage.getName() : '';
@@ -9069,7 +9620,13 @@
 		
 		graph.getGlobalVariable = function(name)
 		{
-			if (name == 'page' && ui.currentPage != null)
+			var file = ui.getCurrentFile();
+			
+			if (name == 'filename' && file != null)
+			{
+				return file.getTitle();
+			}
+			else if (name == 'page' && ui.currentPage != null)
 			{
 				return ui.currentPage.getName();
 			}
@@ -9408,19 +9965,25 @@
 					var x = pt.x / scale - tr.x;
 					var y = pt.y / scale - tr.y;
 					
-					if (mxEvent.isAltDown(evt))
-					{
-						x = 0;
-						y = 0;
-					}
-					
 				    if (evt.dataTransfer.files.length > 0)
 				    {
+						if (mxEvent.isAltDown(evt))
+						{
+							x = null;
+							y = null;
+						}
+						
 						this.importFiles(evt.dataTransfer.files, x, y, this.maxImageSize, null, null, null, null,
 							mxEvent.isControlDown(evt), null, null, mxEvent.isShiftDown(evt));
 		    		}
 				    else
 				    {
+						if (mxEvent.isAltDown(evt))
+						{
+							x = 0;
+							y = 0;
+						}
+						
 				    	var uri = (mxUtils.indexOf(evt.dataTransfer.types, 'text/uri-list') >= 0) ?
 				    		evt.dataTransfer.getData('text/uri-list') : null;
 				    	var data = this.extractGraphModelFromEvent(evt, this.pages != null);
@@ -9461,6 +10024,16 @@
 				    			{
 				    				html = a[0].getAttribute('href');
 				    			}
+					    		else
+					    		{
+					    			// Extracts preformatted text
+					    			var pre = div.getElementsByTagName('pre');
+					    			
+					    			if (pre != null && pre.length == 1)
+					    			{
+					    				html = mxUtils.getTextContent(pre[0]);
+					    			}
+					    		}
 				    		}
 				    		
 				    		var resizeImages = true;
@@ -9566,25 +10139,25 @@
 								{
 									if (graph.isEditing())
 									{
-									    	this.importFiles([item.getAsFile()], 0, 0, this.maxImageSize, function(data, mimeType, x, y, w, h)
-									    	{
-									    		// Inserts image into current text box
-									    		graph.insertImage(data, w, h);
-									    	}, function()
-									    	{
-									    		// No post processing
-									    	}, function(file)
-									    	{
-									    		// Handles only images
-									    		return file.type.substring(0, 6) == 'image/';
-									    	}, function(queue)
-									    	{
-									    		// Invokes elements of queue in order
-									    		for (var i = 0; i < queue.length; i++)
-									    		{
-									    			queue[i]();
-									    		}
-									    	});
+								    	this.importFiles([item.getAsFile()], 0, 0, this.maxImageSize, function(data, mimeType, x, y, w, h)
+								    	{
+								    		// Inserts image into current text box
+								    		graph.insertImage(data, w, h);
+								    	}, function()
+								    	{
+								    		// No post processing
+								    	}, function(file)
+								    	{
+								    		// Handles only images
+								    		return file.type.substring(0, 6) == 'image/';
+								    	}, function(queue)
+								    	{
+								    		// Invokes elements of queue in order
+								    		for (var i = 0; i < queue.length; i++)
+								    		{
+								    			queue[i]();
+								    		}
+								    	});
 									}
 									else
 									{
@@ -9773,14 +10346,14 @@
 				
 				if (evt.clipboardData != null)
 				{
-					this.pasteCells(evt, textInput, true);
+					this.pasteCells(evt, textInput, true, true);
 				}
 
 				if (!mxEvent.isConsumed(evt))
 				{
 					window.setTimeout(mxUtils.bind(this, function()
 					{
-						this.pasteCells(evt, textInput, false);
+						this.pasteCells(evt, textInput, false, true);
 					}), 0);
 				}
 			}
@@ -9910,7 +10483,9 @@
 			
 			this.addListener('customFontsChanged', mxUtils.bind(this, function(sender, evt)
 			{
-				mxSettings.setCustomFonts(this.menus.customFonts);
+				var customFonts = evt.getProperty('customFonts');
+				this.menus.customFonts = customFonts;
+				mxSettings.setCustomFonts(customFonts);
 				mxSettings.save();
 			}));
 			
@@ -9944,8 +10519,6 @@
 			
 			this.addListener('gridColorChanged', mxUtils.bind(this, function(sender, evt)
 			{
-				console.log('gridColorChanged', this.editor.graph.view.gridColor);
-				
 				mxSettings.setGridColor(this.editor.graph.view.gridColor, uiTheme == 'dark');
 				mxSettings.save();
 			}));
@@ -10026,22 +10599,50 @@
 			elt.innerHTML = '';
 		}
 	};
-	
+
 	/**
 	 * Creates the format panel and adds overrides.
 	 */
-	EditorUi.prototype.pasteCells = function(evt, realElt, useEvent)
+	EditorUi.prototype.pasteCells = function(evt, realElt, useEvent, pasteAsLabel)
 	{
 		if (!mxEvent.isConsumed(evt))
 		{
 			var elt = realElt;
+			var asHtml = false;
 			
-			if (useEvent && evt.clipboardData != null)
+			if (useEvent && evt.clipboardData != null && evt.clipboardData.getData)
 			{
-				// Creates a dummy element and parses the HTML to get
-				// consistent behaviour for system paste HTML into elt
-				elt = document.createElement('div');
-				elt.innerHTML = evt.clipboardData.getData('text/html');
+				var data = evt.clipboardData.getData('text/html');
+				
+				if (data != null && data.length > 0)
+				{
+					elt = document.createElement('div');
+					elt.innerHTML = data;
+					asHtml = true;
+					
+					// Workaround for innerText not ignoring style elements in Chrome
+					var styles = elt.getElementsByTagName('style');
+					
+					if (styles != null)
+					{
+						while (styles.length > 0)
+						{
+							styles[0].parentNode.removeChild(styles[0]);
+						}
+					}
+					
+					Graph.removePasteFormatting(elt);
+				}
+				else
+				{
+					data = evt.clipboardData.getData('text/plain');
+					
+					if (data != null && data.length > 0)
+					{
+						elt = document.createElement('div');
+						mxUtils.setTextContent(elt, data);
+					}
+				}
 			}
 			
 			var spans = elt.getElementsByTagName('span');
@@ -10080,8 +10681,9 @@
 			}
 			else
 			{
-				var xml = mxUtils.trim((mxClient.IS_QUIRKS || document.documentMode == 8) ?
-					mxUtils.getTextContent(elt) : elt.textContent);
+				var xml = (asHtml) ? elt.outerHTML :
+					mxUtils.trim((elt.innerText == null) ?
+					mxUtils.getTextContent(elt) : elt.innerText);
 				var compat = false;
 				
 				// Workaround for junk after XML in VM
@@ -10118,53 +10720,60 @@
 					// ignore
 				}
 
-				var graph = this.editor.graph;
-				
-				if (xml != null && xml.length > 0)
+				try
 				{
-					if (graph.lastPasteXml == xml)
+					var graph = this.editor.graph;
+					
+					if (xml != null && xml.length > 0)
 					{
-						graph.pasteCounter++;
-					}
-					else
-					{
-						graph.lastPasteXml = xml;
-						graph.pasteCounter = 0;
-					}
-
-					var dx = graph.pasteCounter * graph.gridSize;
-										
-					if (compat || this.isCompatibleString(xml))
-					{
-						graph.setSelectionCells(this.importXml(xml, dx, dx));
-					}
-					else
-					{
-						var pt = graph.getInsertPoint();
-						
-						if (graph.isMouseInsertPoint())
+						if (graph.lastPasteXml == xml)
 						{
-							dx = 0;
+							graph.pasteCounter++;
+						}
+						else
+						{
+							graph.lastPasteXml = xml;
+							graph.pasteCounter = 0;
+						}
+	
+						var dx = graph.pasteCounter * graph.gridSize;
+											
+						if (compat || this.isCompatibleString(xml))
+						{
+							graph.setSelectionCells(this.importXml(xml, dx, dx));
+						}
+						else if (pasteAsLabel && graph.getSelectionCount() == 1)
+						{
+							graph.labelChanged(graph.getSelectionCell(), xml);
+						}
+						else
+						{
+							var pt = graph.getInsertPoint();
 							
-							// No offset for insert at mouse position
-							if (graph.lastPasteXml == xml && graph.pasteCounter > 0)
+							if (graph.isMouseInsertPoint())
 							{
-								graph.pasteCounter--;
+								dx = 0;
+								
+								// No offset for insert at mouse position
+								if (graph.lastPasteXml == xml && graph.pasteCounter > 0)
+								{
+									graph.pasteCounter--;
+								}
+							}
+							
+							graph.setSelectionCells(this.insertTextAt(xml, pt.x + dx, pt.y + dx, true));
+						}
+						
+						if (!graph.isSelectionEmpty())
+						{
+							graph.scrollCellToVisible(graph.getSelectionCell());
+						
+							if (this.hoverIcons != null)
+							{
+								this.hoverIcons.update(graph.view.getState(graph.getSelectionCell()));
 							}
 						}
-						
-						graph.setSelectionCells(this.insertTextAt(xml, pt.x + dx, pt.y + dx, true));
-					}
-					
-					if (!graph.isSelectionEmpty())
-					{
-						graph.scrollCellToVisible(graph.getSelectionCell());
-					
-						if (this.hoverIcons != null)
-						{
-							this.hoverIcons.update(graph.view.getState(graph.getSelectionCell()));
-						}
-						
+							
 						try
 						{
 							mxEvent.consume(evt);
@@ -10174,11 +10783,15 @@
 							// ignore event no longer exists in async handler in IE8-
 						}
 					}
+					else if (!useEvent)
+					{
+						graph.lastPasteXml = null;
+						graph.pasteCounter = 0;
+					}
 				}
-				else if (!useEvent)
+				catch (e)
 				{
-					graph.lastPasteXml = null;
-					graph.pasteCounter = 0;
+					this.handleError(e);
 				}
 			}
 		}
@@ -10451,6 +11064,10 @@
 								{
 									name = name.substring(0, name.length - 4) + '.drawio';
 								}
+								else if (/(\.pdf)$/i.test(name))
+								{
+									name = name.substring(0, name.length - 4) + '.drawio';
+								}
 								
 								var handleResult = mxUtils.bind(this, function(xml)
 								{
@@ -10581,6 +11198,15 @@
 									{
 										data = this.extractGraphModelFromPng(data);
 									}
+									else if (file.type == 'application/pdf')
+						    		{
+										var xml = Editor.extractGraphModelFromPdf(data);
+										
+										if (xml != null)
+										{
+											data = xml;
+										}
+						    		}
 									
 									this.spinner.stop();
 									this.openLocalFile(data, name, temp);
@@ -10600,7 +11226,9 @@
 						window.openFile = null;
 					});
 					
-					if (file.type.substring(0, 5) === 'image' && file.type.substring(0, 9) !== 'image/svg')
+					if ((file.type.substring(0, 5) === 'image' ||
+						file.type === 'application/pdf') &&
+						file.type.substring(0, 9) !== 'image/svg')
 					{
 						reader.readAsDataURL(file);
 					}
@@ -10996,490 +11624,502 @@
 					data = null;
 				}
 				
-				if (data == null)
+				try
 				{
-					// Ignore
-					return;
-				}
-				else if (data.action == 'dialog')
-				{
-					this.showError((data.titleKey != null) ? mxResources.get(data.titleKey) : data.title,
-						(data.messageKey != null) ? mxResources.get(data.messageKey) : data.message,
-						(data.buttonKey != null) ? mxResources.get(data.buttonKey) : data.button);
-					
-					if (data.modified != null)
+					if (data == null)
 					{
-						this.editor.modified = data.modified;
+						// Ignore
+						return;
 					}
-					
-					return;
-				}
-				else if (data.action == 'prompt')
-				{
-					this.spinner.stop();
-					
-					var dlg = new FilenameDialog(this, data.defaultValue || '',
-						(data.okKey != null) ? mxResources.get(data.okKey) : null, function(value)
+					else if (data.action == 'dialog')
 					{
-						if (value != null)
-						{
-							parent.postMessage(JSON.stringify({event: 'prompt', value: value, message: data}), '*');
-						}
-					}, (data.titleKey != null) ? mxResources.get(data.titleKey) : data.title);
-					this.showDialog(dlg.container, 300, 80, true, false);
-					dlg.init();
-					
-					return;
-				}
-				else if (data.action == 'draft')
-				{
-					var tmp = extractDiagramXml(data.xml);
-					this.spinner.stop();
-					
-					var dlg = new DraftDialog(this, mxResources.get('draftFound', [data.name || this.defaultFilename]),
-						tmp, mxUtils.bind(this, function()
-					{
-						this.hideDialog();
-						parent.postMessage(JSON.stringify({event: 'draft', result: 'edit', message: data}), '*');
-					}), mxUtils.bind(this, function()
-					{
-						this.hideDialog();
-						parent.postMessage(JSON.stringify({event: 'draft', result: 'discard', message: data}), '*');
-					}), (data.editKey) ? mxResources.get(data.editKey) : null,
-						(data.discardKey) ? mxResources.get(data.discardKey) : null,
-						(data.ignore) ? mxUtils.bind(this, function()
-						{
-							this.hideDialog();
-							parent.postMessage(JSON.stringify({event: 'draft', result: 'ignore', message: data}), '*');
-						}) : null);
-					this.showDialog(dlg.container, 640, 480, true, false, mxUtils.bind(this, function(cancel)
-					{
-						if (cancel)
-						{
-							this.actions.get('exit').funct();
-						}
-					}));
-					
-					try
-					{
-						dlg.init();
-					}
-					catch (e)
-					{
-						parent.postMessage(JSON.stringify({event: 'draft', error: e.toString(), message: data}), '*');
-					}
-					
-					return;
-				}
-				else if (data.action == 'template')
-				{
-					this.spinner.stop();
-					
-					var enableRecentDocs = data.enableRecent == 1;
-					var enableSearchDocs = data.enableSearch == 1;
-					var enableCustomTemp = data.enableCustomTemp == 1;
-					
-					var dlg = new NewDialog(this, false, data.callback != null, mxUtils.bind(this, function(xml, name)
-					{
-						xml = xml || this.emptyDiagramXml;
+						this.showError((data.titleKey != null) ? mxResources.get(data.titleKey) : data.title,
+							(data.messageKey != null) ? mxResources.get(data.messageKey) : data.message,
+							(data.buttonKey != null) ? mxResources.get(data.buttonKey) : data.button);
 						
-						// LATER: Add autosave option in template message
-						if (data.callback != null)
+						if (data.modified != null)
 						{
-							parent.postMessage(JSON.stringify({event: 'template', xml: xml,
-								blank: xml == this.emptyDiagramXml, name: name}), '*');
+							this.editor.modified = data.modified;
 						}
-						else
-						{
-							fn(xml, evt, xml != this.emptyDiagramXml);
-							
-							// Workaround for status updated before modified applied
-							if (!this.editor.modified)
-							{
-								this.editor.setStatus('');
-							}
-						}
-					}), null, null, null, null, null, null, null, 
-					enableRecentDocs? mxUtils.bind(this, function(recentReadyCallback) 
-					{
-						this.remoteInvoke('getRecentDiagrams', null, null, recentReadyCallback, function()
-						{
-							recentReadyCallback(null, 'Network Error!');
-						});
-					}) : null, 
-					enableSearchDocs?  mxUtils.bind(this, function(searchStr, searchReadyCallback) 
-					{
-						this.remoteInvoke('searchDiagrams', [searchStr], null, searchReadyCallback, function()
-						{
-							searchReadyCallback(null, 'Network Error!');
-						});
-					}) : null, 
-					mxUtils.bind(this, function(url, info, name) 
-					{
-						//If binary files are possible, we can get the file content using remote invokation, imported it, and send final mxFile back
-						parent.postMessage(JSON.stringify({event: 'template', docUrl: url, info: info,
-							name: name}), '*');
-					}), null, null,
-					enableCustomTemp? mxUtils.bind(this, function(customTempCallback) 
-					{
-						this.remoteInvoke('getCustomTemplates', null, null, customTempCallback, function()
-						{
-							customTempCallback({}, 0); //ignore error by sending empty templates
-						});
-					}) : null);
-
-					this.showDialog(dlg.container, 620, 440, true, false, mxUtils.bind(this, function(cancel)
-					{
-						if (cancel)
-						{
-							this.actions.get('exit').funct();
-						}
-					}));
-					dlg.init();
-					
-					return;
-				}
-				else if (data.action == 'textContent')
-				{
-					//TODO Remove this message and use remove invokation instead
-					var allPagesTxt = this.getDiagramTextContent();
-					parent.postMessage(JSON.stringify({event: 'textContent', data: allPagesTxt, message: data}), '*');
-					return;
-				}
-				else if (data.action == 'status')
-				{
-					if (data.messageKey != null)
-					{
-						this.editor.setStatus(mxUtils.htmlEntities(mxResources.get(data.messageKey)));
+						
+						return;
 					}
-					else if (data.message != null)
-					{
-						this.editor.setStatus(mxUtils.htmlEntities(data.message));
-					}
-					
-					if (data.modified != null)
-					{
-						this.editor.modified = data.modified;
-					}
-					
-					return;
-				}
-				else if (data.action == 'spinner')
-				{
-					var msg = (data.messageKey != null) ? mxResources.get(data.messageKey) : data.message;
-					
-					if (data.show != null && !data.show)
+					else if (data.action == 'prompt')
 					{
 						this.spinner.stop();
-					}
-					else
-					{
-						this.spinner.spin(document.body, msg)
-					}
-
-					return;
-				}
-				else if (data.action == 'export')
-				{
-					if (data.format == 'png' || data.format == 'xmlpng')
-					{
-						if ((data.spin == null && data.spinKey == null) || this.spinner.spin(document.body,
-							(data.spinKey != null) ? mxResources.get(data.spinKey) : data.spin))
+						
+						var dlg = new FilenameDialog(this, data.defaultValue || '',
+							(data.okKey != null) ? mxResources.get(data.okKey) : null, function(value)
 						{
-							var xml = (data.xml != null) ? data.xml : this.getFileData(true);
-							this.editor.graph.setEnabled(false);
-							var graph = this.editor.graph;
-							
-							var postDataBack = mxUtils.bind(this, function(uri)
+							if (value != null)
 							{
-								this.editor.graph.setEnabled(true);
-								this.spinner.stop();
-								
-								var msg = this.createLoadMessage('export');
-								msg.format = data.format;
-								msg.message = data;
-								msg.data = uri;
-								msg.xml = encodeURIComponent(xml);
-								parent.postMessage(JSON.stringify(msg), '*');
-							});
-							
-							var processUri = mxUtils.bind(this, function(uri)
+								parent.postMessage(JSON.stringify({event: 'prompt', value: value, message: data}), '*');
+							}
+						}, (data.titleKey != null) ? mxResources.get(data.titleKey) : data.title);
+						this.showDialog(dlg.container, 300, 80, true, false);
+						dlg.init();
+						
+						return;
+					}
+					else if (data.action == 'draft')
+					{
+						var tmp = extractDiagramXml(data.xml);
+						this.spinner.stop();
+						
+						var dlg = new DraftDialog(this, mxResources.get('draftFound', [data.name || this.defaultFilename]),
+							tmp, mxUtils.bind(this, function()
+						{
+							this.hideDialog();
+							parent.postMessage(JSON.stringify({event: 'draft', result: 'edit', message: data}), '*');
+						}), mxUtils.bind(this, function()
+						{
+							this.hideDialog();
+							parent.postMessage(JSON.stringify({event: 'draft', result: 'discard', message: data}), '*');
+						}), (data.editKey) ? mxResources.get(data.editKey) : null,
+							(data.discardKey) ? mxResources.get(data.discardKey) : null,
+							(data.ignore) ? mxUtils.bind(this, function()
 							{
-								if (uri == null)
-								{
-									uri = Editor.blankImage;
-								}
-								
-						   	    if (data.format == 'xmlpng')
-						   	    {
-						   	    	uri = this.writeGraphModelToPng(uri, 'tEXt', 'mxfile',
-						   	    		encodeURIComponent(xml));
-						   	    }
-						   	    	
-								// Removes temporary graph from DOM
-						   	    if (graph != this.editor.graph)
-								{
-									graph.container.parentNode.removeChild(graph.container);
-								}
-				   	   	    	
-						   	    postDataBack(uri);
-							});
-					
-							var pageId = data.pageId || (this.pages != null? this.pages[0].getId() : null);
-							
-							// LATER: Uses external export if current page (not first page) has mathEnabled
-							if (this.isExportToCanvas())
+								this.hideDialog();
+								parent.postMessage(JSON.stringify({event: 'draft', result: 'ignore', message: data}), '*');
+							}) : null);
+						this.showDialog(dlg.container, 640, 480, true, false, mxUtils.bind(this, function(cancel)
+						{
+							if (cancel)
 							{
-								// Exports PNG for first/specific page while other page is visible by creating a graph
-								// LATER: Add caching for the graph or SVG while not on first page
-								if (this.pages != null && this.currentPage.getId() != pageId)
-								{
-									var graphGetGlobalVariable = graph.getGlobalVariable;
-									graph = this.createTemporaryGraph(graph.getStylesheet());
-									var page;
-									
-									for (var i = 0; i < this.pages.length; i++)
-									{
-										if (this.pages[i].getId() == pageId)
-										{
-											page = this.updatePageRoot(this.pages[i]);
-											break;
-										}
-									}
+								this.actions.get('exit').funct();
+							}
+						}));
+						
+						try
+						{
+							dlg.init();
+						}
+						catch (e)
+						{
+							parent.postMessage(JSON.stringify({event: 'draft', error: e.toString(), message: data}), '*');
+						}
+						
+						return;
+					}
+					else if (data.action == 'template')
+					{
+						this.spinner.stop();
+						
+						var enableRecentDocs = data.enableRecent == 1;
+						var enableSearchDocs = data.enableSearch == 1;
+						var enableCustomTemp = data.enableCustomTemp == 1;
+						
+						var dlg = new NewDialog(this, false, data.callback != null, mxUtils.bind(this, function(xml, name)
+						{
+							xml = xml || this.emptyDiagramXml;
 							
-									graph.getGlobalVariable = function(name)
-									{
-										if (name == 'page')
-										{
-											return page.getName();
-										}
-										else if (name == 'pagenumber')
-										{
-											return 1;
-										}
-										
-										return graphGetGlobalVariable.apply(this, arguments);
-									};
-							
-									document.body.appendChild(graph.container);
-									graph.model.setRoot(page.root);
-								}
-
-								//Set visible layers based on message setting
-								if (data.layerIds != null)
-								{
-									var graphModel = graph.model;
-									var layers = graphModel.getChildCells(graphModel.getRoot());
-									var layerIdsMap = {};
-									
-									for (var i = 0; i < data.layerIds.length; i++)
-									{
-										layerIdsMap[data.layerIds[i]] = true;
-									}
-
-									for (var i = 0; i < layers.length; i++)
-									{
-										graphModel.setVisible(layers[i], layerIdsMap[layers[i].id] || false);
-									}
-								}
-								
-								this.exportToCanvas(mxUtils.bind(this, function(canvas)
-							   	{
-									processUri(canvas.toDataURL('image/png'));
-							   	}), null, null, null, mxUtils.bind(this, function()
-								{
-							   		processUri(null);
-								}), null, null, data.scale, null, null, null, graph);
+							// LATER: Add autosave option in template message
+							if (data.callback != null)
+							{
+								parent.postMessage(JSON.stringify({event: 'template', xml: xml,
+									blank: xml == this.emptyDiagramXml, name: name}), '*');
 							}
 							else
 							{
-								// Data from server is base64 encoded to avoid binary XHR
-								// Double encoding for XML arg is needed for UTF8 encoding
-						       	var req = new mxXmlRequest(EXPORT_URL, 'format=png&embedXml=' +
-						       		((data.format == 'xmlpng') ? '1' : '0') + 
-						       		(pageId != null? '&pageId=' + pageId : '') +
-						       		(data.layerIds != null? '&extras=' + encodeURIComponent(JSON.stringify({layerIds: data.layerIds})) : '') +
-						       		(data.scale != null? '&scale=' + data.scale : '') +'&base64=1&xml=' +
-						       		encodeURIComponent(xml));
-
-								req.send(mxUtils.bind(this, function(req)
+								fn(xml, evt, xml != this.emptyDiagramXml);
+								
+								// Workaround for status updated before modified applied
+								if (!this.editor.modified)
 								{
-									// Temp graph was never created at this point so we can
-									// skip processUri since it already contains the XML
-									if (req.getStatus() >= 200 && req.getStatus() <= 299)
-									{
-										postDataBack('data:image/png;base64,' + req.getText());
-									}
-									else
-									{
-										processUri(null);
-									}
-								}), mxUtils.bind(this, function()
-								{
-									processUri(null);
-								}));
+									this.editor.setStatus('');
+								}
 							}
-						}
+						}), null, null, null, null, null, null, null, 
+						enableRecentDocs? mxUtils.bind(this, function(recentReadyCallback) 
+						{
+							this.remoteInvoke('getRecentDiagrams', null, null, recentReadyCallback, function()
+							{
+								recentReadyCallback(null, 'Network Error!');
+							});
+						}) : null, 
+						enableSearchDocs?  mxUtils.bind(this, function(searchStr, searchReadyCallback) 
+						{
+							this.remoteInvoke('searchDiagrams', [searchStr], null, searchReadyCallback, function()
+							{
+								searchReadyCallback(null, 'Network Error!');
+							});
+						}) : null, 
+						mxUtils.bind(this, function(url, info, name) 
+						{
+							//If binary files are possible, we can get the file content using remote invokation, imported it, and send final mxFile back
+							parent.postMessage(JSON.stringify({event: 'template', docUrl: url, info: info,
+								name: name}), '*');
+						}), null, null,
+						enableCustomTemp? mxUtils.bind(this, function(customTempCallback) 
+						{
+							this.remoteInvoke('getCustomTemplates', null, null, customTempCallback, function()
+							{
+								customTempCallback({}, 0); //ignore error by sending empty templates
+							});
+						}) : null);
+	
+						this.showDialog(dlg.container, 620, 440, true, false, mxUtils.bind(this, function(cancel)
+						{
+							if (cancel)
+							{
+								this.actions.get('exit').funct();
+							}
+						}));
+						dlg.init();
+						
+						return;
 					}
-					else
+					else if (data.action == 'textContent')
 					{
-						// SVG is generated from graph so parse optional XML
-						if (data.xml != null && data.xml.length > 0)
+						//TODO Remove this message and use remove invokation instead
+						var allPagesTxt = this.getDiagramTextContent();
+						parent.postMessage(JSON.stringify({event: 'textContent', data: allPagesTxt, message: data}), '*');
+						return;
+					}
+					else if (data.action == 'status')
+					{
+						if (data.messageKey != null)
 						{
-							this.setFileData(data.xml);
+							this.editor.setStatus(mxUtils.htmlEntities(mxResources.get(data.messageKey)));
+						}
+						else if (data.message != null)
+						{
+							this.editor.setStatus(mxUtils.htmlEntities(data.message));
 						}
 						
-						var msg = this.createLoadMessage('export');
-						
-						// Forces new HTML format if pages exists
-						if (data.format == 'html2' || (data.format == 'html' && (urlParams['pages'] != '0' ||
-							(this.pages != null && this.pages.length > 1))))
+						if (data.modified != null)
 						{
-							var node = this.getXmlFileData();
-							msg.xml = mxUtils.getXml(node);
-							msg.data = this.getFileData(null, null, true, null, null, null, node);
-							msg.format = data.format;
+							this.editor.modified = data.modified;
 						}
-						else if (data.format == 'html')
+						
+						return;
+					}
+					else if (data.action == 'spinner')
+					{
+						var msg = (data.messageKey != null) ? mxResources.get(data.messageKey) : data.message;
+						
+						if (data.show != null && !data.show)
 						{
-							var xml = this.editor.getGraphXml();
-							msg.data = this.getHtml(xml, this.editor.graph);
-							msg.xml = mxUtils.getXml(xml);
-							msg.format = data.format;
+							this.spinner.stop();
 						}
 						else
 						{
-							// Creates a preview with no alt text for unsupported browsers
-				        	mxSvgCanvas2D.prototype.foAltText = null;
-				        	
-				        	var bg = this.editor.graph.background;
-				        	
-				        	if (bg == mxConstants.NONE)
-				        	{
-				        		bg = null;
-				        	}
-
-							msg.xml = this.getFileData(true, null, null, null, null,
-								null, null, null, null, false);
-							msg.format = 'svg';
-					        	
-				        	if (data.embedImages || data.embedImages == null)
-				        	{
-								if ((data.spin == null && data.spinKey == null) || this.spinner.spin(document.body,
-									(data.spinKey != null) ? mxResources.get(data.spinKey) : data.spin))
+							this.spinner.spin(document.body, msg)
+						}
+	
+						return;
+					}
+					else if (data.action == 'export')
+					{
+						if (data.format == 'png' || data.format == 'xmlpng')
+						{
+							if ((data.spin == null && data.spinKey == null) || this.spinner.spin(document.body,
+								(data.spinKey != null) ? mxResources.get(data.spinKey) : data.spin))
+							{
+								var xml = (data.xml != null) ? data.xml : this.getFileData(true);
+								this.editor.graph.setEnabled(false);
+								var graph = this.editor.graph;
+								
+								var postDataBack = mxUtils.bind(this, function(uri)
 								{
-									this.editor.graph.setEnabled(false);
+									this.editor.graph.setEnabled(true);
+									this.spinner.stop();
 									
-					        		if (data.format == 'xmlsvg')
-					        		{
-						        		this.getEmbeddedSvg(msg.xml, this.editor.graph, null, true, mxUtils.bind(this, function(svg)
-					        			{
-											this.editor.graph.setEnabled(true);
-											this.spinner.stop();
-											
-											msg.data = this.createSvgDataUri(svg);
-											parent.postMessage(JSON.stringify(msg), '*');
-					        			}));
-					        		}
-					        		else
-					        		{
-					        			this.convertImages(this.editor.graph.getSvg(bg), mxUtils.bind(this, function(svgRoot)
-					        			{
-											this.editor.graph.setEnabled(true);
-											this.spinner.stop();
-											
-											msg.data = this.createSvgDataUri(mxUtils.getXml(svgRoot));
-											parent.postMessage(JSON.stringify(msg), '*');
-					        			}));
-					        		}
-								}
-					        		
-				        		return;
-				        	}
-				        	else
-				        	{
-				        		var svg = (data.format == 'xmlsvg') ? this.getEmbeddedSvg(this.getFileData(true),
-				        		this.editor.graph, null, true) : mxUtils.getXml(this.editor.graph.getSvg(bg));
-				        		msg.data = this.createSvgDataUri(svg);
-					        }
-						}
-
-						parent.postMessage(JSON.stringify(msg), '*');
-					}
-					
-					return;
-				}
-				else if (data.action == 'load')
-				{
-					autosave = data.autosave == 1;
-					this.hideDialog();
-					
-					if (data.modified != null && urlParams['modified'] == null)
-					{
-						urlParams['modified'] = data.modified;
-					}
-					
-					if (data.saveAndExit != null && urlParams['saveAndExit'] == null)
-					{
-						urlParams['saveAndExit'] = data.saveAndExit;
-					}
-					
-					if (data.title != null && this.buttonContainer != null)
-					{
-						var tmp = document.createElement('span');
-						mxUtils.write(tmp, data.title);
+									var msg = this.createLoadMessage('export');
+									msg.format = data.format;
+									msg.message = data;
+									msg.data = uri;
+									msg.xml = encodeURIComponent(xml);
+									parent.postMessage(JSON.stringify(msg), '*');
+								});
+								
+								var processUri = mxUtils.bind(this, function(uri)
+								{
+									if (uri == null)
+									{
+										uri = Editor.blankImage;
+									}
+									
+							   	    if (data.format == 'xmlpng')
+							   	    {
+							   	    	uri = this.writeGraphModelToPng(uri, 'tEXt', 'mxfile',
+							   	    		encodeURIComponent(xml));
+							   	    }
+							   	    	
+									// Removes temporary graph from DOM
+							   	    if (graph != this.editor.graph)
+									{
+										graph.container.parentNode.removeChild(graph.container);
+									}
+					   	   	    	
+							   	    postDataBack(uri);
+								});
 						
-						if (uiTheme == 'atlas')
-						{
-							this.buttonContainer.style.paddingRight = '12px';
-							this.buttonContainer.style.paddingTop = '6px';
-							this.buttonContainer.style.right = '25px';
+								var pageId = data.pageId || (this.pages != null? this.pages[0].getId() : null);
+								
+								// LATER: Uses external export if current page (not first page) has mathEnabled
+								if (this.isExportToCanvas())
+								{
+									// Exports PNG for first/specific page while other page is visible by creating a graph
+									// LATER: Add caching for the graph or SVG while not on first page
+									if (this.pages != null && this.currentPage.getId() != pageId)
+									{
+										var graphGetGlobalVariable = graph.getGlobalVariable;
+										graph = this.createTemporaryGraph(graph.getStylesheet());
+										var page;
+										
+										for (var i = 0; i < this.pages.length; i++)
+										{
+											if (this.pages[i].getId() == pageId)
+											{
+												page = this.updatePageRoot(this.pages[i]);
+												break;
+											}
+										}
+								
+										graph.getGlobalVariable = function(name)
+										{
+											if (name == 'page')
+											{
+												return page.getName();
+											}
+											else if (name == 'pagenumber')
+											{
+												return 1;
+											}
+											
+											return graphGetGlobalVariable.apply(this, arguments);
+										};
+								
+										document.body.appendChild(graph.container);
+										graph.model.setRoot(page.root);
+									}
+	
+									//Set visible layers based on message setting
+									if (data.layerIds != null)
+									{
+										var graphModel = graph.model;
+										var layers = graphModel.getChildCells(graphModel.getRoot());
+										var layerIdsMap = {};
+										
+										for (var i = 0; i < data.layerIds.length; i++)
+										{
+											layerIdsMap[data.layerIds[i]] = true;
+										}
+	
+										for (var i = 0; i < layers.length; i++)
+										{
+											graphModel.setVisible(layers[i], layerIdsMap[layers[i].id] || false);
+										}
+									}
+									
+									this.exportToCanvas(mxUtils.bind(this, function(canvas)
+								   	{
+										processUri(canvas.toDataURL('image/png'));
+								   	}), null, null, null, mxUtils.bind(this, function()
+									{
+								   		processUri(null);
+									}), null, null, data.scale, null, null, null, graph);
+								}
+								else
+								{
+									// Data from server is base64 encoded to avoid binary XHR
+									// Double encoding for XML arg is needed for UTF8 encoding
+							       	var req = new mxXmlRequest(EXPORT_URL, 'format=png&embedXml=' +
+							       		((data.format == 'xmlpng') ? '1' : '0') + 
+							       		(pageId != null? '&pageId=' + pageId : '') +
+							       		(data.layerIds != null? '&extras=' + encodeURIComponent(JSON.stringify({layerIds: data.layerIds})) : '') +
+							       		(data.scale != null? '&scale=' + data.scale : '') +'&base64=1&xml=' +
+							       		encodeURIComponent(xml));
+	
+									req.send(mxUtils.bind(this, function(req)
+									{
+										// Temp graph was never created at this point so we can
+										// skip processUri since it already contains the XML
+										if (req.getStatus() >= 200 && req.getStatus() <= 299)
+										{
+											postDataBack('data:image/png;base64,' + req.getText());
+										}
+										else
+										{
+											processUri(null);
+										}
+									}), mxUtils.bind(this, function()
+									{
+										processUri(null);
+									}));
+								}
+							}
 						}
-						else if (uiTheme != 'min')
+						else
 						{
-							this.buttonContainer.style.paddingRight = '38px';
-							this.buttonContainer.style.paddingTop = '6px';
+							// SVG is generated from graph so parse optional XML
+							if (data.xml != null && data.xml.length > 0)
+							{
+								this.setFileData(data.xml);
+							}
+							
+							var msg = this.createLoadMessage('export');
+							
+							// Forces new HTML format if pages exists
+							if (data.format == 'html2' || (data.format == 'html' && (urlParams['pages'] != '0' ||
+								(this.pages != null && this.pages.length > 1))))
+							{
+								var node = this.getXmlFileData();
+								msg.xml = mxUtils.getXml(node);
+								msg.data = this.getFileData(null, null, true, null, null, null, node);
+								msg.format = data.format;
+							}
+							else if (data.format == 'html')
+							{
+								var xml = this.editor.getGraphXml();
+								msg.data = this.getHtml(xml, this.editor.graph);
+								msg.xml = mxUtils.getXml(xml);
+								msg.format = data.format;
+							}
+							else
+							{
+								// Creates a preview with no alt text for unsupported browsers
+					        	mxSvgCanvas2D.prototype.foAltText = null;
+					        	
+					        	var bg = this.editor.graph.background;
+					        	
+					        	if (bg == mxConstants.NONE)
+					        	{
+					        		bg = null;
+					        	}
+	
+								msg.xml = this.getFileData(true, null, null, null, null,
+									null, null, null, null, false);
+								msg.format = 'svg';
+								
+								var postResult = mxUtils.bind(this, function(svg)
+								{
+									this.editor.graph.setEnabled(true);
+									this.spinner.stop();
+								
+									msg.data = this.createSvgDataUri(svg);
+									parent.postMessage(JSON.stringify(msg), '*');
+								});
+								
+								if (data.format == 'xmlsvg')
+								{
+									if ((data.spin == null && data.spinKey == null) || this.spinner.spin(document.body,
+										(data.spinKey != null) ? mxResources.get(data.spinKey) : data.spin))
+									{
+										this.getEmbeddedSvg(msg.xml, this.editor.graph, null, true, postResult, null, null, data.embedImages);
+									}
+								}
+								else
+					        	{
+									if ((data.spin == null && data.spinKey == null) || this.spinner.spin(document.body,
+										(data.spinKey != null) ? mxResources.get(data.spinKey) : data.spin))
+									{
+										this.editor.graph.setEnabled(false);
+					        			var svgRoot = this.editor.graph.getSvg(bg);
+					        			
+					        			this.embedFonts(svgRoot, mxUtils.bind(this, function(svgRoot)
+										{
+					        				if (data.embedImages || data.embedImages == null)
+					        				{
+												this.convertImages(svgRoot, mxUtils.bind(this, function(svgRoot)
+							        			{
+													postResult(mxUtils.getXml(svgRoot));
+							        			}));
+					        				}
+					        				else
+					        				{
+					        					postResult(mxUtils.getXml(svgRoot));
+					        				}
+										}));
+									}
+					        	}
+								
+								return;
+							}
+	
+							parent.postMessage(JSON.stringify(msg), '*');
 						}
-
-						if (this.embedFilenameSpan != null)
-						{
-							this.embedFilenameSpan.parentNode.removeChild(this.embedFilenameSpan);
-						}
-
-						this.buttonContainer.appendChild(tmp);
-						this.embedFilenameSpan = tmp;
+						
+						return;
 					}
-					
-					if (data.xmlpng != null)
+					else if (data.action == 'load')
 					{
-						data = this.extractGraphModelFromPng(data.xmlpng);
+						autosave = data.autosave == 1;
+						this.hideDialog();
+						
+						if (data.modified != null && urlParams['modified'] == null)
+						{
+							urlParams['modified'] = data.modified;
+						}
+						
+						if (data.saveAndExit != null && urlParams['saveAndExit'] == null)
+						{
+							urlParams['saveAndExit'] = data.saveAndExit;
+						}
+						
+						if (data.title != null && this.buttonContainer != null)
+						{
+							var tmp = document.createElement('span');
+							mxUtils.write(tmp, data.title);
+							
+							if (uiTheme == 'atlas')
+							{
+								this.buttonContainer.style.paddingRight = '12px';
+								this.buttonContainer.style.paddingTop = '6px';
+								this.buttonContainer.style.right = '25px';
+							}
+							else if (uiTheme != 'min')
+							{
+								this.buttonContainer.style.paddingRight = '38px';
+								this.buttonContainer.style.paddingTop = '6px';
+							}
+	
+							if (this.embedFilenameSpan != null)
+							{
+								this.embedFilenameSpan.parentNode.removeChild(this.embedFilenameSpan);
+							}
+	
+							this.buttonContainer.appendChild(tmp);
+							this.embedFilenameSpan = tmp;
+						}
+						
+						if (data.xmlpng != null)
+						{
+							data = this.extractGraphModelFromPng(data.xmlpng);
+						}
+						else
+						{
+							data = data.xml;
+						}
+					}
+					else if (data.action == 'remoteInvokeReady') 
+					{
+						this.handleRemoteInvokeReady(parent);
+						return;
+					}
+					else if (data.action == 'remoteInvoke') 
+					{
+						this.handleRemoteInvoke(data, evt.origin);
+						return;
+					}
+					else if (data.action == 'remoteInvokeResponse')
+					{
+						this.handleRemoteInvokeResponse(data);
+						return;
 					}
 					else
 					{
-						data = data.xml;
+						// Unknown message must stop execution
+						parent.postMessage(JSON.stringify({error: 'unknownMessage', data: JSON.stringify(data)}), '*');
+						
+						return;
 					}
 				}
-				else if (data.action == 'remoteInvokeReady') 
+				catch (e)
 				{
-					this.handleRemoteInvokeReady(parent);
-					return;
-				}
-				else if (data.action == 'remoteInvoke') 
-				{
-					this.handleRemoteInvoke(data);
-					return;
-				}
-				else if (data.action == 'remoteInvokeResponse')
-				{
-					this.handleRemoteInvokeResponse(data);
-					return;
-				}
-				else
-				{
-					// Unknown message must stop execution
-					parent.postMessage(JSON.stringify({error: 'unknownMessage', data: JSON.stringify(data)}), '*');
-					
-					return;
+					// TODO: Block handling of more messages when in error state
+					this.handleError(e);
 				}
 			}
 			
@@ -11926,31 +12566,31 @@
         			throw new Error(mxResources.get('invalidOrMissingFile'));
         		}
         		
-        		var keys = this.editor.csvToArray(lines[index]);
-    			
-    			// Converts name of identity and parent to indexes of column
-    			var identityIndex = null;
+    			// Converts identity and parent to index and validates XML attribute names
+    			var keys = this.editor.csvToArray(lines[index]);
+        		var identityIndex = null;
     			var parentIndex = null;
+    			var attribs = [];
     			
-    			if (identity != null || parent != null)
-    			{
-    				for (var i = 0; i < keys.length; i++)
-		    		{
-    					if (identity == keys[i])
-    					{
-    						identityIndex = i;
-    					}
-    					
-    					if (parent == keys[i])
-    					{
-    						parentIndex = i;
-    					}
-		    		}
-    			}
-    			
+				for (var i = 0; i < keys.length; i++)
+	    		{
+					if (identity == keys[i])
+					{
+						identityIndex = i;
+					}
+					
+					if (parent == keys[i])
+					{
+						parentIndex = i;
+					}
+					
+					attribs.push(mxUtils.trim(keys[i]).replace(/[^a-z0-9]+/ig, '_').
+						replace(/^\d+/, '').replace(/_+$/, ''));
+	    		}
+				
     			if (label == null)
     			{
-    				label = '%' + keys[0] + '%';
+    				label = '%' + attribs[0] + '%';
     			}
     			
     			if (edges != null)
@@ -11964,157 +12604,166 @@
 					}
 				}
     			
+    			// Parse and validate input
+    			var arrays = [];
+    			
+    			for (var i = index + 1; i < lines.length; i++)
+	    		{
+	    			var values = this.editor.csvToArray(lines[i]);
+	    			
+	    			if (values == null)
+	    			{
+	    				var short = (lines[i].length > 40) ? lines[i].substring(0, 40) + '...' : lines[i];
+	    				
+	    				throw new Error(short + ' (' + i + '):\n' + mxResources.get('containsValidationErrors'));
+	    			}
+	    			else if (values.length > 0)
+		    		{
+	    				arrays.push(values);
+	    			}
+	    		}
+    			
         		graph.model.beginUpdate();
         		try
         		{
-	    			for (var i = index + 1; i < lines.length; i++)
+	    			for (var i = 0; i < arrays.length; i++)
 		    		{
-    	    			var values = this.editor.csvToArray(lines[i]);
-    	    			
-    	    			if (values == null)
-    	    			{
-    	    				var short = (lines[i].length > 40) ? lines[i].substring(0, 40) + '...' : lines[i];
-    	    				
-    	    				throw new Error(i + ' (' + short + ') ' + mxResources.get('containsValidationErrors'));
-    	    			}
-    	    			else if (values.length == keys.length)
-		    			{
-	    					var cell = null;
-	    					var id = (identityIndex != null) ? namespace + values[identityIndex] : null;
-	    					
-	    					if (id != null)
+    	    			var values = arrays[i];
+    					var cell = null;
+    					var id = (identityIndex != null) ? namespace + values[identityIndex] : null;
+    					
+    					if (id != null)
+    					{
+    						cell = graph.model.getCell(id);
+    					}
+    					
+    					var exists = cell != null;
+    					var newCell = new mxCell(label, new mxGeometry(x0, y,
+		    				0, 0), style || 'whiteSpace=wrap;html=1;');
+    					newCell.vertex = true;
+    					newCell.id = id;
+						
+						for (var j = 0; j < values.length; j++)
+				    	{
+							graph.setAttributeForCell(newCell, attribs[j], values[j]);
+				    	}
+						
+						if (labelname != null && labels != null)
+						{
+							var tempLabel = labels[newCell.getAttribute(labelname)];
+							
+							if (tempLabel != null)
+							{
+								graph.labelChanged(newCell, tempLabel);
+							}
+						}
+
+						if (stylename != null && styles != null)
+						{
+							var tempStyle = styles[newCell.getAttribute(stylename)];
+							
+							if (tempStyle != null)
+							{
+								newCell.style = tempStyle;
+							}
+						}
+
+						graph.setAttributeForCell(newCell, 'placeholders', '1');
+						newCell.style = graph.replacePlaceholders(newCell, newCell.style);
+
+						if (exists)
+						{
+							graph.model.setGeometry(cell, newCell.geometry);
+							graph.model.setStyle(cell, newCell.style);
+							
+							if (mxUtils.indexOf(cells, cell) < 0)
+							{
+								cells.push(cell);
+							}
+						}
+						
+						cell = newCell;
+    					
+						if (!exists)
+						{
+	    					for (var e = 0; e < edges.length; e++)
 	    					{
-	    						cell = graph.model.getCell(id);
+	    						lookups[edges[e].to][cell.getAttribute(edges[e].to)] = cell;
 	    					}
-	    					
-	    					var exists = cell != null;
-	    					var newCell = new mxCell(label, new mxGeometry(x0, y,
-			    				0, 0), style || 'whiteSpace=wrap;html=1;');
-	    					newCell.vertex = true;
-	    					newCell.id = id;
+						}
+						
+						if (link != null && link != 'link')
+						{
+							graph.setLinkForCell(cell, cell.getAttribute(link));
 							
-							for (var j = 0; j < values.length; j++)
-					    	{
-								graph.setAttributeForCell(newCell, keys[j], values[j]);
-					    	}
-							
-							if (labelname != null && labels != null)
+							// Removes attribute
+							graph.setAttributeForCell(cell, link, null);
+						}
+						
+						// Sets the size
+						graph.fireEvent(new mxEventObject('cellsInserted', 'cells', [cell]));
+						var size = this.editor.graph.getPreferredSizeForCell(cell);
+						
+						if (cell.vertex)
+						{
+							if (left != null && cell.getAttribute(left) != null)
 							{
-								var tempLabel = labels[newCell.getAttribute(labelname)];
-								
-								if (tempLabel != null)
-								{
-									graph.labelChanged(newCell, tempLabel);
-								}
+								cell.geometry.x = x0 + parseFloat(cell.getAttribute(left));
 							}
 
-							if (stylename != null && styles != null)
+							if (top != null && cell.getAttribute(top) != null)
 							{
-								var tempStyle = styles[newCell.getAttribute(stylename)];
-								
-								if (tempStyle != null)
-								{
-									newCell.style = tempStyle;
-								}
-							}
-	
-							graph.setAttributeForCell(newCell, 'placeholders', '1');
-							newCell.style = graph.replacePlaceholders(newCell, newCell.style);
-
-							if (exists)
-							{
-								graph.model.setGeometry(cell, newCell.geometry);
-								graph.model.setStyle(cell, newCell.style);
-								
-								if (mxUtils.indexOf(cells, cell) < 0)
-								{
-									cells.push(cell);
-								}
+								cell.geometry.y = y0 + parseFloat(cell.getAttribute(top));
 							}
 							
-							cell = newCell;
-	    					
-							if (!exists)
+							if (width.charAt(0) == '@' && cell.getAttribute(width.substring(1)) != null)
 							{
-		    					for (var e = 0; e < edges.length; e++)
-		    					{
-		    						lookups[edges[e].to][cell.getAttribute(edges[e].to)] = cell;
-		    					}
-							}
-							
-							if (link != null && link != 'link')
-							{
-								graph.setLinkForCell(cell, cell.getAttribute(link));
-								
-								// Removes attribute
-								graph.setAttributeForCell(cell, link, null);
-							}
-							
-							// Sets the size
-							graph.fireEvent(new mxEventObject('cellsInserted', 'cells', [cell]));
-							var size = this.editor.graph.getPreferredSizeForCell(cell);
-							
-							if (cell.vertex)
-							{
-								if (left != null && cell.getAttribute(left) != null)
-								{
-									cell.geometry.x = x0 + parseFloat(cell.getAttribute(left));
-								}
-	
-								if (top != null && cell.getAttribute(top) != null)
-								{
-									cell.geometry.y = y0 + parseFloat(cell.getAttribute(top));
-								}
-								
-								if (width.charAt(0) == '@' && cell.getAttribute(width.substring(1)) != null)
-								{
-									cell.geometry.width = parseFloat(cell.getAttribute(width.substring(1)));
-								}
-								else
-								{
-									cell.geometry.width = (width == 'auto') ? size.width + padding : parseFloat(width);
-								}
-
-								if (height.charAt(0) == '@' && cell.getAttribute(height.substring(1)) != null)
-								{
-									cell.geometry.height = parseFloat(cell.getAttribute(height.substring(1)));
-								}
-								else
-								{
-									cell.geometry.height = (height == 'auto') ? size.height + padding : parseFloat(height);
-								}
-								
-								y += cell.geometry.height + nodespacing;
-							}
-							
-							if (!exists)
-							{
-		    					var parent = (parentIndex != null) ? graph.model.getCell(
-		    						namespace + values[parentIndex]) : null;
-								allCells.push(cell);
-		    					
-		    					if (parent != null)
-		    					{
-		    						parent.style = graph.replacePlaceholders(parent, parentstyle);
-		    						graph.addCell(cell, parent);
-		    					}
-		    					else
-		    					{
-		    						cells.push(graph.addCell(cell));
-		    					}
+								cell.geometry.width = parseFloat(cell.getAttribute(width.substring(1)));
 							}
 							else
 							{
-								if (dups[id] == null)
-								{
-									dups[id] = [];
-								}
-								
-								dups[id].push(cell);
+								cell.geometry.width = (width == 'auto') ? size.width + padding : parseFloat(width);
 							}
-		    			}
-		    		}
-	    			
+
+							if (height.charAt(0) == '@' && cell.getAttribute(height.substring(1)) != null)
+							{
+								cell.geometry.height = parseFloat(cell.getAttribute(height.substring(1)));
+							}
+							else
+							{
+								cell.geometry.height = (height == 'auto') ? size.height + padding : parseFloat(height);
+							}
+							
+							y += cell.geometry.height + nodespacing;
+						}
+						
+						if (!exists)
+						{
+	    					var parent = (parentIndex != null) ? graph.model.getCell(
+	    						namespace + values[parentIndex]) : null;
+							allCells.push(cell);
+	    					
+	    					if (parent != null)
+	    					{
+	    						parent.style = graph.replacePlaceholders(parent, parentstyle);
+	    						graph.addCell(cell, parent);
+	    					}
+	    					else
+	    					{
+	    						cells.push(graph.addCell(cell));
+	    					}
+						}
+						else
+						{
+							if (dups[id] == null)
+							{
+								dups[id] = [];
+							}
+							
+							dups[id].push(cell);
+						}
+	    			}
+
 					var roots = cells.slice();
 					var select = cells.slice();
 	
@@ -12122,9 +12771,9 @@
 					{
 						var edge = edges[e];
 	
-						for (var i = 0; i < cells.length; i++)
+						for (var i = 0; i < allCells.length; i++)
 	    				{
-							var cell = cells[i];
+							var cell = allCells[i];
 							
 							var insertEdge = mxUtils.bind(this, function(realCell, dataCell, edge)
 							{
@@ -12134,32 +12783,41 @@
 		    					{
 		    						// Removes attribute
 			    					graph.setAttributeForCell(dataCell, edge.from, null);
-		    						var refs = tmp.split(',');
-		    						
-			    					for (var j = 0; j < refs.length; j++)
-			        				{
-			    						var ref = lookups[edge.to][refs[j]];
+			    					
+			    					if (tmp != '')
+			    					{
+			    						var refs = tmp.split(',');
 			    						
-			    						if (ref != null)
-			    						{
-			    							var label = edge.label;
-			    							
-			    							if (edge.fromlabel != null)
-			    							{
-			    								label = (dataCell.getAttribute(edge.fromlabel) || '') + (label || '');
-			    							}
-			    							
-			    							if (edge.tolabel != null)
-			    							{
-			    								label = (label || '') + (ref.getAttribute(edge.tolabel) || '');
-			    							}
-			    							
-			    							select.push(graph.insertEdge(null, null, label || '',
-				    							(edge.invert) ? ref : realCell, (edge.invert) ? realCell : ref,
-								    			edge.style || graph.createCurrentEdgeStyle()));
-			    							mxUtils.remove((edge.invert) ? realCell : ref, roots);
-			    						}
-			        				}
+				    					for (var j = 0; j < refs.length; j++)
+				        				{
+				    						var ref = lookups[edge.to][refs[j]];
+				    						
+				    						if (ref != null)
+				    						{
+				    							var label = edge.label;
+				    							
+				    							if (edge.fromlabel != null)
+				    							{
+				    								label = (dataCell.getAttribute(edge.fromlabel) || '') + (label || '');
+				    							}
+				    							
+				    							if (edge.tolabel != null)
+				    							{
+				    								label = (label || '') + (ref.getAttribute(edge.tolabel) || '');
+				    							}
+				    							
+				    							var placeholders = ((edge.placeholders == 'target') ==
+				    								!edge.invert) ? ref : realCell;
+				    							var style = (edge.style != null) ?
+				    								graph.replacePlaceholders(placeholders, edge.style) :
+				    								graph.createCurrentEdgeStyle();
+
+				    							select.push(graph.insertEdge(null, null, label || '', (edge.invert) ?
+				    								ref : realCell, (edge.invert) ? realCell : ref, style));
+				    							mxUtils.remove((edge.invert) ? realCell : ref, roots);
+				    						}
+				        				}
+			    					}
 		    					}
 							});
 							
@@ -12645,97 +13303,8 @@
 				this.toolbar.edgeStyleMenu.setEnabled(editable);
 			}
 		}
-		
-		if (this.isAppCache())
-		{
-			var appCache = applicationCache;
-			
-			// NOTE: HTML5 Cache is deprecated
-			if (appCache != null && this.offlineStatus == null)
-			{
-				this.offlineStatus = document.createElement('div');
-				this.offlineStatus.className = 'geItem';
-				this.offlineStatus.style.position = 'absolute';
-				this.offlineStatus.style.fontSize = '8pt';
-				this.offlineStatus.style.top = '2px';
-				this.offlineStatus.style.right = '12px';
-				this.offlineStatus.style.color = '#666';
-				this.offlineStatus.style.margin = '4px';
-				this.offlineStatus.style.padding = '2px';
-				this.offlineStatus.style.verticalAlign = 'middle';
-				this.offlineStatus.innerHTML = '';
-				
-				this.menubarContainer.appendChild(this.offlineStatus);
-				
-				mxEvent.addListener(this.offlineStatus, 'click', mxUtils.bind(this, function()
-				{
-					var img = this.offlineStatus.getElementsByTagName('img');
-					
-					if (img != null && img.length > 0)
-					{
-						this.alert(img[0].getAttribute('title'));
-					}
-				}));
-				
-				var appCache = window.applicationCache;
-				var lastStatus = null;
-				
-				var updateStatus = mxUtils.bind(this, function()
-				{
-					var newStatus = appCache.status;
-					var html = '';
-					
-					if (newStatus == appCache.CHECKING)
-					{
-						newStatus = appCache.DOWNLOADING;
-					}
-					
-					switch (newStatus)
-					{
-						case appCache.UNCACHED: // UNCACHED == 0
-							html = '';
-							break;
-						case appCache.IDLE: // IDLE == 1
-							html = (uiTheme == 'min') ? '' : '<img title="draw.io is up to date." border="0" src="' + IMAGE_PATH + '/checkmark.gif"/>';
-							break;
-						case appCache.DOWNLOADING: // DOWNLOADING == 3
-							html = '<img title="Downloading new version..." border="0" src="' + IMAGE_PATH + '/spin.gif"/>';
-							break;
-						case appCache.UPDATEREADY:  // UPDATEREADY == 4
-							html = '<img title="' + mxUtils.htmlEntities(mxResources.get('restartForChangeRequired')) +
-					    		'" border="0" src="' + IMAGE_PATH + '/download.png"/>';
-							break;
-						case appCache.OBSOLETE: // OBSOLETE == 5
-							html = '<img title="Obsolete" border="0" src="' + IMAGE_PATH + '/clear.gif"/>';
-							break;
-						default:
-							html = '<img title="Unknown" border="0" src="' + IMAGE_PATH + '/clear.gif"/>';
-							break;
-					}
-					
-					if (newStatus != lastStatus)
-					{
-						this.offlineStatus.innerHTML = html;
-						lastStatus = newStatus;
-					}
-				});
 
-				mxEvent.addListener(appCache, 'checking', updateStatus);
-				mxEvent.addListener(appCache, 'noupdate', updateStatus);
-				mxEvent.addListener(appCache, 'downloading', updateStatus);
-				mxEvent.addListener(appCache, 'progress', updateStatus);
-				mxEvent.addListener(appCache, 'cached', updateStatus);
-				mxEvent.addListener(appCache, 'updateready', updateStatus);
-				mxEvent.addListener(appCache, 'obsolete', updateStatus);
-				mxEvent.addListener(appCache, 'error', updateStatus);
-				
-				updateStatus();
-			}
-		}
-		else
-		{
-			this.updateUserElement();
-		}
+		this.updateUserElement();
 	};
 	
 	/**
@@ -12923,6 +13492,7 @@
 				if (this.currentPage != this.pages[i])
 				{
 					pageGraph = this.createTemporaryGraph(graph.getStylesheet());
+					this.updatePageRoot(this.pages[i]);
 					pageGraph.model.setRoot(this.pages[i].root);								
 				}
 				allPagesTxt += this.pages[i].getName() + ' ' + pageGraph.getIndexableText() + ' ';
@@ -13083,7 +13653,10 @@
 	//Remote invokation, currently limited to functions in EditorUi (and its sub objects) for security reasons
 	//White-listed functions and some info about it
 	EditorUi.prototype.remoteInvokableFns = {
-		getDiagramTextContent: {isAsync: false}
+		getDiagramTextContent: {isAsync: false},
+		getLocalStorageFile: {isAsync: false, allowedDomains: ['app.diagrams.net']},
+		getLocalStorageFileNames: {isAsync: false, allowedDomains: ['app.diagrams.net']},
+		setMigratedFlag: {isAsync: false, allowedDomains: ['app.diagrams.net']}
 	};
 	
 	EditorUi.prototype.remoteInvokeCallbacks = [];
@@ -13106,7 +13679,11 @@
 		var msgMarkers = msg.msgMarkers;
 		var callback = this.remoteInvokeCallbacks[msgMarkers.callbackId];
 		
-		if (msg.error)
+		if (callback == null)
+		{
+			throw new Error('No callback for ' + ((msgMarkers != null) ? msgMarkers.callbackId : 'null'));
+		}
+		else if (msg.error)
 		{
 			if (callback.error) callback.error(msg.error.errResp);
 		}
@@ -13114,7 +13691,7 @@
 		{
 			callback.callback.apply(this, msg.resp);
 		}
-		
+			
 		this.remoteInvokeCallbacks[msgMarkers.callbackId] = null; //set it to null only to keep the index
 	};
 
@@ -13153,7 +13730,7 @@
 		}
 	};
 
-	EditorUi.prototype.handleRemoteInvoke = function(msg)
+	EditorUi.prototype.handleRemoteInvoke = function(msg, origin)
 	{
 		var sendResponse = mxUtils.bind(this, function(resp, error)
 		{
@@ -13179,6 +13756,26 @@
 			
 			if (functionInfo != null && typeof this[funtionName] === 'function')
 			{
+				if (functionInfo.allowedDomains)
+				{
+					var allowed = false;
+					
+					for (var i = 0; i < functionInfo.allowedDomains.length; i++)
+					{
+						if (origin == 'https://' + functionInfo.allowedDomains[i])
+						{
+							allowed = true;
+							break;
+						}
+					}
+					
+					if (!allowed)
+					{
+						sendResponse(null, 'Invalid Call: ' + funtionName + ' is not allowed.');
+						return;
+					}
+				}
+				
 				var functionArgs = msg.functionArgs;
 				
 				//Confirm functionArgs are not null and is array, otherwise, discard it
@@ -13223,10 +13820,400 @@
 	};
 	
 	/**
-	 *
-	 * Comments: We need these functions as wrapper of File functions in order to facilitate overriding them if comments are needed without having a file
-	 * 			 (e.g. Confluence Plugin)
-	 * 
+	 * Opens the application keystore.
+	 */
+	EditorUi.prototype.openDatabase = function(success, error)
+	{
+		if (this.database == null)
+		{
+			var indexedDB = window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB;
+			
+			if (indexedDB != null)
+			{
+				try
+				{
+					var req = indexedDB.open('database', 2);
+					
+					req.onupgradeneeded = function(e)
+					{
+						var db = req.result;
+						
+						if (e.oldVersion < 1)
+						{
+						    // Version 1 is the first version of the database.
+							db.createObjectStore('objects', {keyPath: 'key'});
+						}
+						
+						if (e.oldVersion < 2)
+						{
+							// Version 2 introduces browser file storage.
+							db.createObjectStore('files', {keyPath: 'title'});
+							db.createObjectStore('filesInfo', {keyPath: 'title'});
+							EditorUi.migrateStorageFiles = isLocalStorage;
+						}
+					}
+					
+					req.onsuccess = mxUtils.bind(this, function(e)
+					{
+						var db = req.result;
+						this.database = db;
+						
+						if (EditorUi.migrateStorageFiles)
+						{
+							StorageFile.migrate(db);
+							EditorUi.migrateStorageFiles = false;
+						}
+
+						if (location.host == 'app.diagrams.net' && !this.drawioMigrationStarted)
+						{
+							this.drawioMigrationStarted = true;
+							
+							this.getDatabaseItem('.drawioMigrated3', mxUtils.bind(this, function(value)
+							{
+								if (value && urlParams['forceMigration'] != '1') //Already migrated
+								{
+									return;
+								}
+								
+								var drawioFrame = document.createElement('iframe');
+								drawioFrame.style.display = 'none';
+								drawioFrame.setAttribute('src', 'https://www.draw.io?embed=1&proto=json&forceMigration=' + urlParams['forceMigration']);
+						    	document.body.appendChild(drawioFrame);
+						    	var collectNames = true, allDone = false;
+						    	var fileNames, index = 0;
+						    	
+						    	var markAsMigrated = mxUtils.bind(this, function()
+								{
+						    		allDone = true;
+									this.setDatabaseItem('.drawioMigrated3', true);
+									drawioFrame.contentWindow.postMessage(JSON.stringify({action: 'remoteInvoke', funtionName: 'setMigratedFlag'}), '*');
+								});
+								
+								var next = mxUtils.bind(this, function()
+								{
+									index++;
+									fetchOneFile();
+								});
+								
+								var fetchOneFile = mxUtils.bind(this, function()
+								{
+									try
+									{
+										if (index >= fileNames.length)
+										{
+											markAsMigrated();
+											return;
+										}
+										
+										var fileTitle = fileNames[index];
+										
+										StorageFile.getFileContent(this, fileTitle, mxUtils.bind(this, function(data)
+										{
+											if (data == null || (fileTitle == '.scratchpad' && data == this.emptyLibraryXml)) //Don't overwrite
+											{
+												drawioFrame.contentWindow.postMessage(JSON.stringify({action: 'remoteInvoke', funtionName: 'getLocalStorageFile', functionArgs: [fileTitle]}), '*');
+											}
+											else
+											{
+												next();
+											}
+										}), next);  //Ignore errors
+									}
+									catch(e)
+									{
+										//Log error
+										console.log(e);
+									}
+								});
+								
+								var importOneFile = mxUtils.bind(this, function(file)
+								{
+									try
+									{
+										this.setDatabaseItem(null, [{
+											title: file.title,
+											size: file.data.length,
+											lastModified: Date.now(),
+											type: file.isLib? 'L' : 'F'
+										}, {
+											title: file.title,
+											data: file.data
+										}], next, next /* Ignore errors */, ['filesInfo', 'files']);
+									}
+									catch(e)
+									{
+										//Log error
+										console.log(e);
+									}
+								});
+										
+						    	var messageListener = mxUtils.bind(this, function(evt)
+								{
+									try
+									{
+										//Only accept messages from migration iframe
+										if (evt.source != drawioFrame.contentWindow)
+										{
+											return;
+										}
+										
+										var drawMsg = {};
+										
+										try
+										{
+											drawMsg = JSON.parse(evt.data);
+										}
+										catch(e){} //Ignore
+									
+										if (drawMsg.event == 'init')
+										{
+											drawioFrame.contentWindow.postMessage(JSON.stringify({action: 'remoteInvokeReady'}), '*');
+											drawioFrame.contentWindow.postMessage(JSON.stringify({action: 'remoteInvoke', funtionName: 'getLocalStorageFileNames'}), '*');
+										}
+										else if (drawMsg.event == 'remoteInvokeResponse' && !allDone)
+										{
+											if (collectNames)
+											{
+												if (drawMsg.resp != null && drawMsg.resp.length > 0 && drawMsg.resp[0] != null)
+												{
+													fileNames = drawMsg.resp[0];
+													collectNames = false;
+													fetchOneFile();
+												}
+												else
+												{
+													//Nothing in draw.io localStorage
+													markAsMigrated();
+												}
+											}
+											else
+											{
+												//Add the file, then move to the next
+												if (drawMsg.resp != null && drawMsg.resp.length > 0 && drawMsg.resp[0] != null)
+												{
+													importOneFile(drawMsg.resp[0]);
+												}
+												else
+												{
+													next();
+												}
+											}
+										}
+									}
+									catch(e)
+									{
+										console.log(e);
+									}
+								});
+	
+								window.addEventListener('message', messageListener);
+							})); //Ignore errors
+						}
+							
+						success(db);
+						
+						db.onversionchange = function() 
+						{
+							//TODO Handle DB revision update while code is running
+							//		Save open file and request a page reload before closing the DB
+						    db.close();
+						};
+					});
+					
+					req.onerror = error;
+					
+					req.onblocked = function() 
+					{
+						//TODO Use this when a new version is introduced
+						// there's another open connection to same database
+						// and it wasn't closed after db.onversionchange triggered for them
+					};
+				}
+				catch (e)
+				{
+					if (error != null)
+					{
+						error(e);
+					}
+				}
+			}
+			else if (error != null)
+			{
+				error();
+			}
+		}
+		else
+		{
+			success(this.database);
+		}
+	};
+	
+	/**
+	 * Add/Update item(s) in the database. It supports multiple stores transactions by sending an array of data, storeName 
+	 * (key is optional, can be an array also if multiple stores are needed)
+	 */
+	EditorUi.prototype.setDatabaseItem = function(key, data, success, error, storeName)
+	{
+		this.openDatabase(mxUtils.bind(this, function(db)
+		{
+			try
+			{
+				storeName = storeName || 'objects';
+				
+				if (!Array.isArray(storeName))
+				{
+					storeName = [storeName];
+					key = [key];
+					data = [data];
+				}
+				
+				var trx = db.transaction(storeName, 'readwrite');
+				trx.oncomplete = success;
+				trx.onerror = error;
+		        
+				for (var i = 0; i < storeName.length; i++)
+				{
+					trx.objectStore(storeName[i]).put(key != null && key[i] != null? {key: key[i], data: data[i]} : data[i]);
+				}
+			}
+			catch (e)
+			{
+				if (error != null)
+				{
+					error(e);
+				}
+			}
+		}), error);
+	};
+
+	/**
+	 * Removes the item for the given key from the database.
+	 */
+	EditorUi.prototype.removeDatabaseItem = function(key, success, error, storeName)
+	{
+		this.openDatabase(mxUtils.bind(this, function(db)
+		{
+			storeName = storeName || 'objects';
+			
+			if (!Array.isArray(storeName))
+			{
+				storeName = [storeName];
+				key = [key];
+			}
+			
+			var trx = db.transaction(storeName, 'readwrite');
+			trx.oncomplete = success;
+			trx.onerror = error;
+			
+			for (var i = 0; i < storeName.length; i++)
+			{
+				trx.objectStore(storeName[i]).delete(key[i]);
+			}
+		}), error);
+	};
+	
+	/**
+	 * Returns one item from the database.
+	 */
+	EditorUi.prototype.getDatabaseItem = function(key, success, error, storeName)
+	{
+		this.openDatabase(mxUtils.bind(this, function(db)
+		{
+			try
+			{
+				storeName = storeName || 'objects';
+				var trx = db.transaction([storeName], 'readonly');
+				var req = trx.objectStore(storeName).get(key);
+				
+				req.onsuccess = function()
+				{
+					success(req.result);
+				};
+				
+		        req.onerror = error;
+			}
+	        catch (e)
+			{
+				if (error != null)
+				{
+					error(e);
+				}
+			}
+		}), error);
+	};
+	
+	/**
+	 * Returns all items from the database.
+	 */
+	EditorUi.prototype.getDatabaseItems = function(success, error, storeName)
+	{
+		this.openDatabase(mxUtils.bind(this, function(db)
+		{
+			try
+			{
+				storeName = storeName || 'objects';
+				var trx = db.transaction([storeName], 'readonly');
+				var req = trx.objectStore(storeName).openCursor(
+					IDBKeyRange.lowerBound(0));
+				var items = [];
+				
+				req.onsuccess = function(e)
+				{
+					if (e.target.result == null)
+					{
+						success(items);
+					}
+					else
+					{
+						items.push(e.target.result.value);
+						e.target.result.continue();
+					}
+		        };
+		        
+		        req.onerror = error;
+			}
+			catch (e)
+			{
+				if (error != null)
+				{
+					error(e);
+				}
+			}
+		}), error);
+	};
+	
+	/**
+	 * Returns all item keys from the database.
+	 */
+	EditorUi.prototype.getDatabaseItemKeys = function(success, error, storeName)
+	{
+		this.openDatabase(mxUtils.bind(this, function(db)
+		{
+			try
+			{
+				storeName = storeName || 'objects';
+				var trx = db.transaction([storeName], 'readonly');
+				var req = trx.objectStore(storeName).getAllKeys();
+				
+				req.onsuccess = function()
+				{
+					success(req.result);
+		        };
+		        
+		        req.onerror = error;
+			}
+			catch (e)
+			{
+				if (error != null)
+				{
+					error(e);
+				}
+			}
+		}), error);
+	};
+	/**
+	 * Comments: We need these functions as wrapper of File functions in order to facilitate
+	 * overriding them if comments are needed without having a file (e.g. Confluence Plugin)
 	 */
 	
 	/**
@@ -13381,6 +14368,52 @@
 	{
 		//Using a standard header with specific sequence
 		xhr.setRequestHeader('Content-Language', 'da, mi, en, de-DE');
+	};
+	
+	EditorUi.prototype.getLocalStorageFileNames = function()
+	{
+		if (localStorage.getItem('.localStorageMigrated') == '1' && urlParams['forceMigration'] != '1')
+		{
+			return null;
+		}
+		
+		var files = [];
+		
+		for (var i = 0; i < localStorage.length; i++)
+		{
+			var key = localStorage.key(i);
+			var value = localStorage.getItem(key);
+			
+			if (key.length > 0 && (key == '.scratchpad' || key.charAt(0) != '.') && value.length > 0)
+			{
+				var isFile = (value.substring(0, 8) === '<mxfile ' ||
+							value.substring(0, 5) === '<?xml' || value.substring(0, 12) === '<!--[if IE]>');
+				var isLib = (value.substring(0, 11) === '<mxlibrary>');
+
+				if (isFile || isLib)
+				{
+					files.push(key);
+				}	
+			}
+		}
+		
+		return files;
+	};
+	
+	EditorUi.prototype.getLocalStorageFile = function(key)
+	{
+		if (localStorage.getItem('.localStorageMigrated') == '1' && urlParams['forceMigration'] != '1')
+		{
+			return null;
+		}
+		
+		var value = localStorage.getItem(key);
+		return {title: key, data: value, isLib: value.substring(0, 11) === '<mxlibrary>'};
+	};
+	
+	EditorUi.prototype.setMigratedFlag = function()
+	{
+		localStorage.setItem('.localStorageMigrated', '1');	
 	};
 })();
 
@@ -13991,13 +15024,20 @@ var CommentsWindow = function(editorUi, x, y, w, h, saveCallback)
 		
 		if (curEdited != null)
 		{
-			curEdited.div = curEdited.div.cloneNode(true);
-			var commentEditTxt = curEdited.div.querySelector('.geCommentEditTxtArea');
-			var commentEditBtns = curEdited.div.querySelector('.geCommentEditBtns');
-			
-			curEdited.comment.content = commentEditTxt.value;
-			commentEditTxt.parentNode.removeChild(commentEditTxt);
-			commentEditBtns.parentNode.removeChild(commentEditBtns);
+			try
+			{
+				curEdited.div = curEdited.div.cloneNode(true);
+				var commentEditTxt = curEdited.div.querySelector('.geCommentEditTxtArea');
+				var commentEditBtns = curEdited.div.querySelector('.geCommentEditBtns');
+				
+				curEdited.comment.content = commentEditTxt.value;
+				commentEditTxt.parentNode.removeChild(commentEditTxt);
+				commentEditBtns.parentNode.removeChild(commentEditBtns);
+			}
+			catch (e)
+			{
+				editorUi.handleError(e);
+			}
 		}
 		
 		listDiv.innerHTML = '<div style="padding-top:10px;text-align:center;"><img src="' + IMAGE_PATH + '/spin.gif" valign="middle"> ' +

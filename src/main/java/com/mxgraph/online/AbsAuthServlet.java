@@ -23,11 +23,46 @@ abstract public class AbsAuthServlet extends HttpServlet
 {
 	private static final boolean DEBUG = false;
 	private static final String SEPARATOR = "/:::/";
+	public static final int X_WWW_FORM_URLENCODED = 1;
+	public static final int JSON = 2;
+	
+	protected int postType = X_WWW_FORM_URLENCODED; 
 	
 	static public class Config 
 	{
-		public String DEV_CLIENT_SECRET = null, CLIENT_SECRET = null, DEV_CLIENT_ID = null, CLIENT_ID = null,
-				DEV_REDIRECT_URI = null, REDIRECT_URI = null, AUTH_SERVICE_URL = null;
+		public String REDIRECT_PATH = null, AUTH_SERVICE_URL = null;
+		//TODO These variables are temporary until new method is propagated
+		public String OLD_REDIRECT_URL = null, OLD_CLIENT_ID = null;
+
+		protected HashMap<String, String> clientSecretMap = new HashMap<>();
+		
+		public Config(String clientIds, String clientSecrets)
+		{
+			try
+			{
+				String[] cIds = clientIds.split(SEPARATOR);
+				String[] cSecrets = clientSecrets.split(SEPARATOR);
+				
+				for (int i = 0; i < cIds.length; i++)
+				{
+					clientSecretMap.put(cIds[i], cSecrets[i]);
+				}
+			}
+			catch (Exception e) 
+			{
+				throw new RuntimeException("Invalid config. " + e.getMessage());
+			}
+		}
+		
+		public String getClientSecret(String cId)
+		{
+			return clientSecretMap.get(cId);
+		}
+		
+		public String getRedirectUrl(String domain)
+		{
+			return "https://" + domain + REDIRECT_PATH;
+		}
 	}
 	
 	protected Config getConfig()
@@ -57,7 +92,7 @@ abstract public class AbsAuthServlet extends HttpServlet
 		String refreshToken = request.getParameter("refresh_token");
 		String error = request.getParameter("error");
 		HashMap<String, String> stateVars = new HashMap<>();
-		int configIndex = 0;
+		String secret = null, client = null, redirectUri = null, domain = null, appIndex = null; //TODO appIndex variable is temporary until new method is propagated
 		
 		try
 		{
@@ -76,12 +111,9 @@ abstract public class AbsAuthServlet extends HttpServlet
 					}
 				}
 			
-				String appIndex = stateVars.get("appIndex");
-						
-				if (appIndex != null)
-				{
-					configIndex = Integer.parseInt(appIndex);
-				}
+				domain = stateVars.get("domain");
+				client = stateVars.get("cId");
+				appIndex = stateVars.get("appIndex"); //TODO appIndex variable is temporary until new method is propagated
 			}
 			catch(Exception e)
 			{
@@ -90,25 +122,34 @@ abstract public class AbsAuthServlet extends HttpServlet
 			}
 
 			Config CONFIG = getConfig();
-			String secret, client, redirectUri;
-			String[] secrets, clients;
+			redirectUri = CONFIG.getRedirectUrl(domain != null? domain : request.getServerName());
+			
+			//TODO This code block is temporary until new method is propagated
+			if (appIndex != null || client == null)
+			{
+				int configIndex = 0;
+				
+				try
+				{
+					configIndex = Integer.parseInt(appIndex);
+				}
+				catch(Exception e) {} // Ignore
 
-			if ("127.0.0.1".equals(request.getServerName()))
-			{
-				secrets = CONFIG.DEV_CLIENT_SECRET.split(SEPARATOR);
-				clients = CONFIG.DEV_CLIENT_ID.split(SEPARATOR);
-				redirectUri = CONFIG.DEV_REDIRECT_URI;
+				
+				String[] clients = CONFIG.OLD_CLIENT_ID.split(SEPARATOR);
+				String[] redirectUris = CONFIG.OLD_REDIRECT_URL.split(SEPARATOR);
+
+				if (configIndex < 0 || configIndex >= clients.length)
+				{
+					configIndex = 0;
+				}
+				
+				client = clients[configIndex];
+				redirectUri = redirectUris[configIndex];
 			}
-			else
-			{
-				secrets = CONFIG.CLIENT_SECRET.split(SEPARATOR);
-				clients = CONFIG.CLIENT_ID.split(SEPARATOR);
-				redirectUri = CONFIG.REDIRECT_URI;
-			}
-	
-			secret = secrets.length > configIndex ? secrets[configIndex] : secrets[0];
-			client = clients.length > configIndex ? clients[configIndex] : clients[0];
-	
+
+			secret = CONFIG.getClientSecret(client);
+			
 			if (error != null)
 			{
 				response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
@@ -138,30 +179,60 @@ abstract public class AbsAuthServlet extends HttpServlet
 					con = (HttpURLConnection) obj.openConnection();
 		
 					con.setRequestMethod("POST");
-					con.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
-		
+					
 					boolean jsonResponse = false;
 					StringBuilder urlParameters = new StringBuilder();
-					
-					urlParameters.append("client_id=");
-					urlParameters.append(client);
-					urlParameters.append("&redirect_uri=");
-					urlParameters.append(redirectUri);
-					urlParameters.append("&client_secret=");
-					urlParameters.append(secret);
-					
-					if (code != null)
+
+					if (postType == X_WWW_FORM_URLENCODED)
 					{
-						urlParameters.append("&code=");
-						urlParameters.append(code);
-						urlParameters.append("&grant_type=authorization_code");
+						con.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
+		
+						urlParameters.append("client_id=");
+						urlParameters.append(client);
+						urlParameters.append("&redirect_uri=");
+						urlParameters.append(redirectUri);
+						urlParameters.append("&client_secret=");
+						urlParameters.append(secret);
+					
+						if (code != null)
+						{
+							urlParameters.append("&code=");
+							urlParameters.append(code);
+							urlParameters.append("&grant_type=authorization_code");
+						}
+						else
+						{
+							urlParameters.append("&refresh_token=");
+							urlParameters.append(refreshToken);
+							urlParameters.append("&grant_type=refresh_token");
+							jsonResponse = true;
+						}
 					}
-					else
+					else if (postType == JSON)
 					{
-						urlParameters.append("&refresh_token=");
-						urlParameters.append(refreshToken);
-						urlParameters.append("&grant_type=refresh_token");
-						jsonResponse = true;
+						con.setRequestProperty("Content-Type", "application/json");
+						
+						urlParameters.append("{");
+						urlParameters.append("\"client_id\": \"");
+						urlParameters.append(client);
+						urlParameters.append("\", \"redirect_uri\": \"");
+						urlParameters.append(redirectUri);
+						urlParameters.append("\", \"client_secret\": \"");
+						urlParameters.append(secret);
+					
+						if (code != null)
+						{
+							urlParameters.append("\", \"code\": \"");
+							urlParameters.append(code);
+							urlParameters.append("\", \"grant_type\": \"authorization_code\"}");
+						}
+						else
+						{
+							urlParameters.append("\", \"refresh_token\": \"");
+							urlParameters.append(refreshToken);
+							urlParameters.append("\", \"grant_type\": \"refresh_token\"}");
+							jsonResponse = true;
+						}
 					}
 					
 					// Send post request

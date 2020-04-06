@@ -7,8 +7,23 @@
 	/**
 	 * Specifies the app name. Default is document.title.
 	 */
-	Editor.prototype.appName = 'draw.io';
+	Editor.prototype.appName = 'diagrams.net';
+		
+	/**
+	 * Known file types.
+	 */
+	Editor.prototype.diagramFileTypes = [
+		{description: 'diagramXmlDesc', extension: 'drawio'},
+		{description: 'diagramPngDesc', extension: 'png'},
+		{description: 'diagramSvgDesc', extension: 'svg'},
+		{description: 'diagramHtmlDesc', extension: 'html'},
+		{description: 'diagramXmlDesc', extension: 'xml'}];
 	
+	/**
+	 * Known file types.
+	 */
+	Editor.prototype.libraryFileTypes = [{description: 'Library (.drawiolib, .xml)', extensions: ['drawiolib', 'xml']}];
+
 	/**
 	 * Known extensions for own files.
 	 */
@@ -16,7 +31,7 @@
 		{ext: 'html', title: 'filetypeHtml'},
 		{ext: 'png', title: 'filetypePng'},
 		{ext: 'svg', title: 'filetypeSvg'}];
-	
+
 	/**
 	 * Used in the GraphViewer lightbox.
 	 */
@@ -130,7 +145,7 @@
 	/**
 	 * Disables the shadow option in the format panel.
 	 */
-	Editor.shadowOptionEnabled = true;
+	Editor.shadowOptionEnabled = !mxClient.IS_SF;
 
 	/**
 	 * Reference to the config object passed to <configure>.
@@ -214,18 +229,59 @@
         			{val: 'trapezoidPerimeter', dispName: 'Trapezoid'}, {val: 'stepPerimeter', dispName: 'Step'}]
         },
         {name: 'fixDash', dispName: 'Fixed Dash', type: 'bool', defVal: false},
-        {name: 'jiggle', dispName: 'Jiggle', type: 'float', min: 0, defVal: 1.5, isVisible: function(state)
+        {name: 'jiggle', dispName: 'Jiggle', type: 'float', min: 0, defVal: 1.5, isVisible: function(state, format)
         {
         	return mxUtils.getValue(state.style, 'comic', '0') == '1';
         }},
         {name: 'autosize', dispName: 'Autosize', type: 'bool', defVal: false},
-        {name: 'collapsible', dispName: 'Collapsible', type: 'bool', defVal: false},
-        {name: 'container', dispName: 'Container', type: 'bool', defVal: false},
-        {name: 'recursiveResize', dispName: 'Resize Children', type: 'bool', defVal: true},
-        {name: 'part', dispName: 'Part', type: 'bool', defVal: false},
+        {name: 'container', dispName: 'Container', type: 'bool', defVal: false, isVisible: function(state, format)
+        {
+    		return state.vertices.length == 1 && state.edges.length == 0;
+        }},
+        {name: 'dropTarget', dispName: 'Drop Target', type: 'bool', getDefaultValue: function(state, format)
+        {
+        	var cell = (state.vertices.length == 1 && state.edges.length == 0) ? state.vertices[0] : null;
+        	var graph = format.editorUi.editor.graph;
+        	
+        	return cell != null && (graph.isSwimlane(cell) || graph.model.getChildCount(cell) > 0);
+        }, isVisible: function(state, format)
+        {
+    		return state.vertices.length == 1 && state.edges.length == 0 &&
+    			mxUtils.getValue(state.style, 'part', '0') != '1';
+        }},
+        {name: 'collapsible', dispName: 'Collapsible', type: 'bool', getDefaultValue: function(state, format)
+        {
+        	var cell = (state.vertices.length == 1 && state.edges.length == 0) ? state.vertices[0] : null;
+        	var graph = format.editorUi.editor.graph;
+        	
+        	return cell != null && ((graph.isContainer(cell) && state.style['collapsible'] != '0') ||
+        		(!graph.isContainer(cell) && state.style['collapsible'] == '1'));
+        }, isVisible: function(state, format)
+        {
+    		return state.vertices.length == 1 && state.edges.length == 0;
+        }},
+        {name: 'recursiveResize', dispName: 'Resize Children', type: 'bool', defVal: true, isVisible: function(state, format)
+        {
+    		return state.vertices.length == 1 && state.edges.length == 0 &&
+    			!format.editorUi.editor.graph.isSwimlane(state.vertices[0]) &&
+    			mxUtils.getValue(state.style, 'childLayout', null) == null;
+        }},
+        {name: 'expand', dispName: 'Expand', type: 'bool', defVal: true},
+        {name: 'part', dispName: 'Part', type: 'bool', defVal: false, isVisible: function(state, format)
+        {
+        	var model = format.editorUi.editor.graph.model;
+        	
+        	return (state.vertices.length > 0) ? model.isVertex(model.getParent(state.vertices[0])) : false;
+        }},
         {name: 'editable', dispName: 'Editable', type: 'bool', defVal: true},
         {name: 'backgroundOutline', dispName: 'Background Outline', type: 'bool', defVal: false},
         {name: 'movable', dispName: 'Movable', type: 'bool', defVal: true},
+        {name: 'movableLabel', dispName: 'Movable Label', type: 'bool', defVal: false, isVisible: function(state, format)
+        {
+    		var geo = (state.vertices.length > 0) ? format.editorUi.editor.graph.getCellGeometry(state.vertices[0]) : null;
+    		
+    		return geo != null && !geo.relative;
+        }},
         {name: 'resizable', dispName: 'Resizable', type: 'bool', defVal: true},
         {name: 'resizeWidth', dispName: 'Resize Width', type: 'bool', defVal: false},
         {name: 'resizeHeight', dispName: 'Resize Height', type: 'bool', defVal: false},
@@ -234,6 +290,12 @@
         {name: 'deletable', dispName: 'Deletable', type: 'bool', defVal: true},
         {name: 'treeFolding', dispName: 'Tree Folding', type: 'bool', defVal: false},
         {name: 'treeMoving', dispName: 'Tree Moving', type: 'bool', defVal: false},
+        {name: 'pointerEvents', dispName: 'Pointer Events', type: 'bool', defVal: true, isVisible: function(state, format)
+        {
+        	var fillColor = mxUtils.getValue(state.style, mxConstants.STYLE_FILLCOLOR, null);
+        	
+        	return fillColor == null || fillColor == mxConstants.NONE;
+        }},
         {name: 'moveCells', dispName: 'Move Cells on Fold', type: 'bool', defVal: false, isVisible: function(state, format)
         {
         	return state.vertices.length > 0 && format.editorUi.editor.graph.isContainer(state.vertices[0]);
@@ -300,6 +362,8 @@
 		'#\n' +
 		'## Connections between rows ("from": source colum, "to": target column).\n' +
 		'## Label, style and invert are optional. Defaults are \'\', current style and false.\n' +
+		'## If placeholders are used in the style, they are replaced with data from the source.\n' +
+		'## An optional placeholders can be set to target to use data from the target instead.\n' +
 		'## In addition to label, an optional fromlabel and tolabel can be used to name the column\n' +
 		'## that contains the text for the label in the edges source or target (invert ignored).\n' +
 		'## The label is concatenated in the form fromlabel + label + tolabel if all are defined.\n' +
@@ -401,7 +465,7 @@
 	/**
 	 * Helper function to extract the graph model XML node.
 	 */
-	Editor.extractGraphModel = function(node, allowMxFile)
+	Editor.extractGraphModel = function(node, allowMxFile, checked)
 	{
 		if (node != null && typeof(pako) !== 'undefined')
 		{
@@ -441,7 +505,7 @@
 					if (divs2.length > 0)
 					{
 						var data = mxUtils.getTextContent(divs2[0]);
-		        		data = Graph.decompress(data);
+		        		data = Graph.decompress(data, null, checked);
 		        		
 		        		if (data.length > 0)
 		        		{
@@ -497,7 +561,7 @@
 			
 			if (diagramNode != null)
 			{
-				node = Editor.parseDiagramNode(diagramNode);
+				node = Editor.parseDiagramNode(diagramNode, checked);
 			}
 		}
 		
@@ -512,14 +576,14 @@
 	/**
 	 * Extracts the XML from the compressed or non-compressed text chunk.
 	 */
-	Editor.parseDiagramNode = function(diagramNode)
+	Editor.parseDiagramNode = function(diagramNode, checked)
 	{
 		var text = mxUtils.trim(mxUtils.getTextContent(diagramNode));
 		var node = null;
 		
 		if (text.length > 0)
 		{
-			var tmp = Graph.decompress(text);
+			var tmp = Graph.decompress(text, null, checked);
 			
 			if (tmp != null && tmp.length > 0)
 			{
@@ -560,6 +624,137 @@
 		}
 		
 		return xml;
+	};
+
+	/**
+	 * Static method for parsing PDF files.
+	 */
+	Editor.extractGraphModelFromPdf = function(base64)
+	{
+		base64 = base64.substring(base64.indexOf(',') + 1);
+
+		// Workaround for invalid character error in Safari
+		var f = (window.atob && !mxClient.IS_SF) ? atob(base64) : Base64.decode(base64, true);
+		var check = '/Subject (%3Cmxfile';
+		var result = null;
+		var curline = '';
+		var checked = 0;
+		var pos = 0;
+		var obj = [];
+		var buf = null;
+		var nr = null;
+		
+		while (pos < f.length)
+		{
+			var b = f.charCodeAt(pos);
+			pos += 1;
+			
+			if (b != 10)
+			{
+				curline += String.fromCharCode(b);
+			}
+			
+			if (b == check.charCodeAt(checked))
+			{
+				checked++;
+			}
+			else
+			{
+				checked = 0;
+			}
+			
+			if (checked == check.length)
+			{
+				var end = f.indexOf('%3C%2Fmxfile%3E)', pos) + 15; //15 is the length of encoded </mxfile>
+				pos -= 9; //9 is the length of encoded <mxfile
+				
+				// Default case is XML inlined in Subject metadata
+				if (end > pos)
+				{
+					result = f.substring(pos, end);
+					
+					break;
+				}
+			}
+			
+			// Creates table for lookup if no inline data is found
+			if (b == 10)
+			{
+				if (curline == 'endobj')
+				{
+					buf = null;
+				}
+				else if (curline.substring(curline.length - 3, curline.length) == 'obj' ||
+					curline == 'xref' || curline == 'trailer')
+				{
+					buf = [];
+					obj[curline.split(' ')[0]] = buf;
+				}
+				else if (buf != null)
+				{
+					buf.push(curline);
+				}
+				
+				curline = '';
+			}
+		}
+		
+		// Extract XML via references
+		if (result == null)
+		{
+			result = Editor.extractGraphModelFromXref(obj);
+		}
+		
+		if (result != null)
+		{
+			result = decodeURIComponent(result.
+					replace(/\\\(/g, "(").
+					replace(/\\\)/g, ")"));
+		}
+		
+		return result;
+	};
+
+	/**
+	 * Static method for extracting Subject via references of the form
+	 * 
+	 * << /Size 33 /Root 20 0 R /Info 1 0 R and 1 0 obj << /Subject 22 0 R
+	 * 
+	 * Where Info is the metadata block and Subject is the data block.
+	 */
+	Editor.extractGraphModelFromXref = function(obj)
+	{
+		var trailer = obj['trailer'];
+		var result = null;
+
+		// Gets Info object
+		if (trailer != null)
+		{
+			var arr = /.* \/Info (\d+) (\d+) R/g.exec(trailer.join('\n'));
+			
+			if (arr != null && arr.length > 0)
+			{
+				var info = obj[arr[1]];
+				
+				if (info != null)
+				{
+					arr = /.* \/Subject (\d+) (\d+) R/g.exec(info.join('\n'));
+				
+					if (arr != null && arr.length > 0)
+					{
+						var subj = obj[arr[1]];
+						
+						if (subj != null)
+						{
+							subj = subj.join('\n');
+							result = subj.substring(1, subj.length - 1);
+						}
+					}
+				}
+			}
+		}
+		
+		return result;
 	};
 	
 	/**
@@ -654,7 +849,7 @@
 			}
 		}
 		
-		return cause;
+		return (cause != null) ? mxUtils.trim(cause) : cause;
 	};
 
 	/**
@@ -790,14 +985,21 @@
 			
 			if (config.fontCss)
 			{
-				var s = document.createElement('style');
-				s.setAttribute('type', 'text/css');
-				s.appendChild(document.createTextNode(config.fontCss));
+				Editor.configureFontCss(config.fontCss);
+			}
+			
+			if (config.autosaveDelay != null)
+			{
+				var val = parseInt(config.autosaveDelay);
 				
-				var t = document.getElementsByTagName('script')[0];
-			  	t.parentNode.insertBefore(s, t);
-			  	
-			  	Editor.prototype.fontCss = config.fontCss;
+				if (!isNaN(val) && val > 0)
+				{
+					DrawioFile.prototype.autosaveDelay = val;
+				}
+				else
+				{
+					EditorUi.debug('Invalid autosaveDelay: ' + config.autosaveDelay);
+				}
 			}
 			
 			if (config.plugins != null && !untrusted)
@@ -813,6 +1015,51 @@
 		}
 	};
 
+	/**
+	 * Adds the global fontCss configuration.
+	 */
+	Editor.configureFontCss = function(fontCss)
+	{
+		if (fontCss != null)
+		{
+			Editor.prototype.fontCss = fontCss;
+			var t = document.getElementsByTagName('script')[0];
+			
+			if (t != null && t.parentNode != null)
+			{
+				var s = document.createElement('style');
+				s.setAttribute('type', 'text/css');
+				s.appendChild(document.createTextNode(fontCss));
+				t.parentNode.insertBefore(s, t);
+				
+				// Preloads fonts where supported
+				var parts = fontCss.split('url(');
+				
+				// Strips leading and trailing quotes and spaces
+				function trimString(str)
+				{
+				    return str.replace(new RegExp("^[\\s\"']+", "g"), "").replace(new RegExp("[\\s\"']+$", "g"), "");
+				};
+				
+				for (var i = 1; i < parts.length; i++)
+				{
+				    var idx = parts[i].indexOf(')');
+				    var url = trimString(parts[i].substring(0, idx));
+				    
+				    var l = document.createElement('link');
+					l.setAttribute('rel', 'preload');
+					l.setAttribute('href', url);
+					l.setAttribute('as', 'font');
+					l.setAttribute('crossorigin', '');
+					
+				  	t.parentNode.insertBefore(l, t);
+				}
+			}
+		}
+	};
+	
+	Editor.GOOGLE_FONTS =  'https://fonts.googleapis.com/css?family=';
+	
 	/**
 	 * Generates a unique ID of the given length
 	 */
@@ -845,9 +1092,9 @@
 	Editor.prototype.timeout = 25000;
 	
 	/**
-	 * This should not be enabled if reflows are required for math rendering.
+	 * Zoomed mathjax output is causing problems in Safari.
 	 */
-	Editor.prototype.useForeignObjectForMath = false;
+	Editor.prototype.useForeignObjectForMath = !mxClient.IS_SF;
 
 	/**
 	 * Executes the first step for connecting to Google Drive.
@@ -933,6 +1180,29 @@
 				this.graph.updateCssTransform();
 
 				this.graph.setShadowVisible(node.getAttribute('shadow') == '1', false);
+				
+				var extFonts = node.getAttribute('extFonts');
+				
+				if (extFonts)
+				{
+					try
+					{
+						extFonts = extFonts.split('|').map(function(ef)
+						{
+							var parts = ef.split('^');
+							return {name: parts[0], url: parts[1]};
+						});
+						
+						for (var i = 0; i < extFonts.length; i++)
+						{
+							this.graph.addExtFont(extFonts[i].name, extFonts[i].url);
+						}
+					}
+					catch(e)
+					{
+						console.log('ExtFonts format error: ' + e.message);
+					}
+				}
 			}
 	
 			// Calls updateGraphComponents
@@ -970,6 +1240,16 @@
 		
 		node.setAttribute('math', (this.graph.mathEnabled) ? '1' : '0');
 		node.setAttribute('shadow', (this.graph.shadowVisible) ? '1' : '0');
+		
+		if (this.graph.extFonts != null && this.graph.extFonts.length > 0)
+		{
+			var strExtFonts = this.graph.extFonts.map(function(ef)
+			{
+				return ef.name + '^' + ef.url;
+			});
+			
+			node.setAttribute('extFonts', strExtFonts.join('|'));
+		}
 		
 		return node;
 	};
@@ -1016,7 +1296,7 @@
 	/**
 	 * Helper function to extract the graph model XML node.
 	 */
-	Editor.prototype.extractGraphModel = function(node, allowMxFile)
+	Editor.prototype.extractGraphModel = function(node, allowMxFile, checked)
 	{
 		return Editor.extractGraphModel.apply(this, arguments);
 	};
@@ -1202,16 +1482,18 @@
 			this.corsRegExp = new RegExp(decodeURIComponent(urlParams['cors']));
 		}
 		
+		// No access-control-allow-origin for some Iconfinder images, add this when fixed:
+		// /^https?:\/\/[^\/]*\.iconfinder.com\//.test(url) ||
 		return (this.corsRegExp != null && this.corsRegExp.test(url)) ||
 			url.substring(0, 34) === 'https://raw.githubusercontent.com/' ||
 			url.substring(0, 23) === 'https://cdn.rawgit.com/' ||
 			url.substring(0, 19) === 'https://rawgit.com/' ||
 			/^https?:\/\/[^\/]*\.blob.core.windows.net\//.test(url) ||
-			/^https?:\/\/[^\/]*\.iconfinder.com\//.test(url) ||
+			/^https?:\/\/[^\/]*\.diagrams\.new\/proxy/.test(url) ||
 			/^https?:\/\/[^\/]*\.draw\.io\/proxy/.test(url) ||
 			/^https?:\/\/[^\/]*\.github\.io\//.test(url);
 	};
-
+	
 	//TODO This function is a replica of EditorUi one, it is planned to replace all calls to EditorUi one to point to this one
 	/**
 	 * Converts all images in the SVG output to data URIs for immediate rendering
@@ -1644,47 +1926,77 @@
         }
     };
 
-	//TODO This function is a replica of EditorUi one, it is planned to replace all calls to EditorUi one to point to this one
 	/**
-	 * Converts math in the given SVG
+	 * Copies MathJax CSS into the SVG output.
 	 */
-	Editor.prototype.convertMath = function(graph, svgRoot, fixPosition, callback)
+	Editor.prototype.addMathCss = function(svgRoot)
 	{
-		if (graph.mathEnabled && typeof(MathJax) !== 'undefined' && typeof(MathJax.Hub) !== 'undefined')
+		var defs = svgRoot.getElementsByTagName('defs');
+		
+		if (defs != null && defs.length > 0)
 		{
-	      	// Temporarily attaches to DOM for rendering
-			// FIXME: If adding svgRoot to body, the text
-			// value of the math is appended, if not
-			// added to DOM then LaTeX does not work.
-			// This must be fixed to enable client-side export
-			// if math is enabled.
-//			document.body.appendChild(svgRoot);
-			Editor.MathJaxRender(svgRoot);
-	      
-			window.setTimeout(mxUtils.bind(this, function()
+			var styles = document.getElementsByTagName('style');
+			
+			for (var i = 0; i < styles.length; i++)
 			{
-				MathJax.Hub.Queue(mxUtils.bind(this, function ()
+				// Ignores style elements with no MathJax CSS
+				if (mxUtils.getTextContent(styles[i]).indexOf('MathJax') > 0)
 				{
-					// Removes from DOM
-//					svgRoot.parentNode.removeChild(svgRoot);
-					
-					callback();
-				}));
-			}), 0);
-		}
-		else
-		{
-			callback();
+					defs[0].appendChild(styles[i].cloneNode(true));
+				}
+			}
 		}
 	};
 
-	//TODO This function is a replica of EditorUi one, it is planned to replace all calls to EditorUi one to point to this one
+	/**
+	 * Adds the global fontCss configuration.
+	 */
+	Editor.prototype.addFontCss = function(svgRoot, fontCss)
+	{
+		fontCss = (fontCss != null) ? fontCss : this.fontCss;
+		
+		// Creates defs element if not available
+		if (fontCss != null)
+		{
+			var defs = svgRoot.getElementsByTagName('defs');
+			var svgDoc = svgRoot.ownerDocument;
+			var defsElt = null;
+			
+			if (defs.length == 0)
+			{
+				defsElt = (svgDoc.createElementNS != null) ?
+					svgDoc.createElementNS(mxConstants.NS_SVG, 'defs') : svgDoc.createElement('defs');
+				
+				if (svgRoot.firstChild != null)
+				{
+					svgRoot.insertBefore(defsElt, svgRoot.firstChild);
+				}
+				else
+				{
+					svgRoot.appendChild(defsElt);
+				}
+			}
+			else
+			{
+				defsElt = defs[0];
+			}
+
+			var style = (svgDoc.createElementNS != null) ?
+				svgDoc.createElementNS(mxConstants.NS_SVG, 'style') : svgDoc.createElement('style');
+			style.setAttribute('type', 'text/css');
+			mxUtils.setTextContent(style, fontCss);
+			defsElt.appendChild(style);
+		}
+	};
+	
 	/**
 	 * See fixme in convertMath for client-side image generation with math.
 	 */
 	Editor.prototype.isExportToCanvas = function()
 	{
-		return mxClient.IS_CHROMEAPP || (!this.graph.mathEnabled && this.useCanvasForExport);
+		// LATER: Fix math rendering in Safari and CSS in Chrome on Windows and Linux
+		return mxClient.IS_CHROMEAPP || (this.useCanvasForExport && (!this.graph.mathEnabled ||
+			(!mxClient.IS_SF && !((mxClient.IS_GC || mxClient.IS_EDGE) && !mxClient.IS_MAC))));
 	};
 
 	//TODO This function is a replica of EditorUi one, it is planned to replace all calls to EditorUi one to point to this one
@@ -1807,10 +2119,12 @@
 						defs[0].appendChild(st);
 					}
 					
-					this.convertMath(graph, svgRoot, true, mxUtils.bind(this, function()
+					if (graph.mathEnabled)
 					{
-						img.src = this.createSvgDataUri(mxUtils.getXml(svgRoot));
-					}));
+						this.addMathCss(svgRoot);
+					}
+					
+					img.src = this.createSvgDataUri(mxUtils.getXml(svgRoot));
 				});
 				
 				this.loadFonts(done);
@@ -3112,7 +3426,7 @@
 							
 							if (prop.allowAuto)
 							{
-								if (inputVal.trim().toLowerCase() == 'auto')
+								if (inputVal.trim != null && inputVal.trim().toLowerCase() == 'auto')
 								{
 									inputVal = 'auto';
 									pType = 'string';
@@ -3256,7 +3570,8 @@
 					if (!prop.isVisible(state, this)) continue;
 				}
 				
-				var pValue = state.style[key] != null? mxUtils.htmlEntities(state.style[key] + '') : prop.defVal; //or undefined if defVal is undefined
+				var pValue = state.style[key] != null? mxUtils.htmlEntities(state.style[key] + '') :
+					((prop.getDefaultValue != null) ? prop.getDefaultValue(state, this) : prop.defVal); //or undefined if defVal is undefined
 
 				if (prop.type == 'separator')
 				{
@@ -3804,6 +4119,17 @@
 		
 		this.updateGlobalUrlVariables();
 	};
+
+	/**
+	 * Disables fast zoom with shadow in lightbox for Safari
+	 * to work around blank output on retina screen.
+	 */
+	var graphIsFastZoomEnabled = Graph.prototype.isFastZoomEnabled;
+	
+	Graph.prototype.isFastZoomEnabled = function()
+	{
+		return graphIsFastZoomEnabled.apply(this, arguments) && (!this.shadowVisible || !mxClient.IS_SF);
+	};
 	
 	/**
 	 * Updates the global variables from the vars URL parameter.
@@ -3891,7 +4217,8 @@
 	 */
 	var graphGetSvg = Graph.prototype.getSvg;
 	
-	Graph.prototype.getSvg = function()
+	Graph.prototype.getSvg = function(background, scale, border, nocrop, crisp,
+			ignoreSelection, showText, imgExport, linkTarget, hasShadow, incExtFonts)
 	{
 		var temp = null;
 		
@@ -3903,6 +4230,38 @@
 		}
 		
 		var result = graphGetSvg.apply(this, arguments);
+		
+		// Adds extrnal fonts
+		if (incExtFonts && this.extFonts != null && this.extFonts.length > 0)
+		{
+			var svgDoc = result.ownerDocument;
+			var style = (svgDoc.createElementNS != null) ?
+		    	svgDoc.createElementNS(mxConstants.NS_SVG, 'style') : svgDoc.createElement('style');
+			svgDoc.setAttributeNS != null? style.setAttributeNS('type', 'text/css') : style.setAttribute('type', 'text/css');
+			
+			var prefix = '';
+			var postfix = '';
+			    	
+			for (var i = 0; i < this.extFonts.length; i++)
+			{
+				var fontName = this.extFonts[i].name, fontUrl = this.extFonts[i].url;
+				
+				if (fontUrl.indexOf(Editor.GOOGLE_FONTS) == 0)
+				{
+					prefix += '@import url(' + fontUrl + ');\n';
+				}
+				else
+				{
+					postfix += '@font-face {\n' +
+			            'font-family: "'+ fontName +'";\n' + 
+			            'src: url("'+ fontUrl +'");\n' + 
+			            '}\n';
+				}				
+			}
+			
+			style.appendChild(svgDoc.createTextNode(prefix + postfix));
+			result.getElementsByTagName('defs')[0].appendChild(style);
+		}
 		
 		if (temp != null)
 		{
@@ -3926,42 +4285,41 @@
 		{
 			var graph = this;
 			var origin = graph.container.getBoundingClientRect();
-			var dy = graph.container.scrollTop - origin.y;
-			var dx = graph.container.scrollLeft - origin.x;
+			var y0 = graph.container.scrollTop - origin.y;
+			var x0 = graph.container.scrollLeft - origin.x;
 			var drawText = imgExport.drawText;
-
-			// Copies rendered math from container to SVG document
-			imgExport.drawText = function(state, canvas)
+			
+			// Replaces input with rendered markup
+			imgExport.drawText = function(state, c)
 			{
-				if (state.text != null && state.text.node != null &&
-					state.text.node.ownerSVGElement == null)
+				if (state.text != null && state.text.value != null && state.text.checkBounds() &&
+					(mxUtils.isNode(state.text.value) || state.text.dialect == mxConstants.DIALECT_STRICTHTML))
 				{
-					// Copies text into DOM using actual bounding box
-					var rect = state.text.node.getBoundingClientRect();
+					var clone = state.text.getContentNode();
 					
-					// Sets position on foreignObject
-					var fo = canvas.root.ownerDocument.createElementNS(mxConstants.NS_SVG, 'foreignObject');
-					fo.setAttribute('x', (rect.x + dx) * canvas.state.scale + canvas.state.dx);
-					fo.setAttribute('y', (rect.y + dy) * canvas.state.scale + canvas.state.dy);
-					fo.setAttribute('width', rect.width * canvas.state.scale);
-					fo.setAttribute('height', rect.height * canvas.state.scale);
-					
-					// Resets position on inner DIV
-					var clone = state.text.node.cloneNode(true);
-					clone.style.top = '0px';
-					clone.style.left = '0px';
-					clone.style.transform = '';
-					
-					// Removes all math elements
-					var ele = clone.getElementsByTagName('math');
-					
-					while (ele.length > 0)
+					if (clone != null)
 					{
-						ele[0].parentNode.removeChild(ele[0]);
+						clone = clone.cloneNode(true);
+						
+						// Removes duplicate math output
+						if (clone.getElementsByTagNameNS)
+						{
+							var ele = clone.getElementsByTagNameNS('http://www.w3.org/1998/Math/MathML', 'math');
+							
+							while (ele.length > 0)
+							{
+								ele[0].parentNode.removeChild(ele[0]);
+							}
+						}
+						
+						if (clone.innerHTML != null)
+						{
+							var prev = state.text.value;
+							state.text.value = clone.innerHTML;
+							drawText.apply(this, arguments);
+							state.text.value = prev;
+						}
 					}
-					
-					fo.appendChild(clone);
-					canvas.root.ownerSVGElement.appendChild(fo);
 				}
 				else
 				{
@@ -3971,17 +4329,6 @@
 		}
 		
 		return imgExport;
-	};
-	
-	/**
-	 * Safari has problems with math typesetting inside foreignObjects.
-	 */
-	var graphIsCssTransformsSupported = Graph.prototype.isCssTransformsSupported;
-	
-	Graph.prototype.isCssTransformsSupported = function()
-	{
-		// FIXME: Safari only disabled due to mathjax rendering errors
-		return graphIsCssTransformsSupported.apply(this, arguments) && !mxClient.IS_SF;
 	};
 
 	/**
@@ -4587,7 +4934,7 @@
 	 */
 	Graph.prototype.setShadowVisible = function(value, fireEvent)
 	{
-		if (mxClient.IS_SVG)
+		if (mxClient.IS_SVG && !mxClient.IS_SF)
 		{
 			fireEvent = (fireEvent != null) ? fireEvent : true;
 			this.shadowVisible = value;
@@ -4647,8 +4994,11 @@
 	mxStencilRegistry.libraries['arrows2'] = [SHAPES_PATH + '/mxArrows.js'];
 	mxStencilRegistry.libraries['atlassian'] = [STENCIL_PATH + '/atlassian.xml', SHAPES_PATH + '/mxAtlassian.js'];
 	mxStencilRegistry.libraries['bpmn'] = [SHAPES_PATH + '/bpmn/mxBpmnShape2.js', STENCIL_PATH + '/bpmn.xml'];
+	mxStencilRegistry.libraries['c4'] = [SHAPES_PATH + '/mxC4.js'];
+	mxStencilRegistry.libraries['cisco19'] = [SHAPES_PATH + '/mxCisco19.js', STENCIL_PATH + '/cisco19.xml'];
 	mxStencilRegistry.libraries['dfd'] = [SHAPES_PATH + '/mxDFD.js'];
 	mxStencilRegistry.libraries['er'] = [SHAPES_PATH + '/er/mxER.js'];
+	mxStencilRegistry.libraries['kubernetes'] = [SHAPES_PATH + '/mxKubernetes.js', STENCIL_PATH + '/kubernetes.xml'];
 	mxStencilRegistry.libraries['flowchart'] = [SHAPES_PATH + '/mxFlowchart.js', STENCIL_PATH + '/flowchart.xml'];
 	mxStencilRegistry.libraries['ios'] = [SHAPES_PATH + '/mockup/mxMockupiOS.js'];
 	mxStencilRegistry.libraries['rackGeneral'] = [SHAPES_PATH + '/rack/mxRack.js', STENCIL_PATH + '/rack/general.xml'];
@@ -4672,9 +5022,10 @@
 	mxStencilRegistry.libraries['mockup/navigation'] = [SHAPES_PATH + '/mockup/mxMockupNavigation.js', STENCIL_PATH + '/mockup/misc.xml'];
 	mxStencilRegistry.libraries['mockup/text'] = [SHAPES_PATH + '/mockup/mxMockupText.js'];
 	mxStencilRegistry.libraries['floorplan'] = [SHAPES_PATH + '/mxFloorplan.js', STENCIL_PATH + '/floorplan.xml'];
-	mxStencilRegistry.libraries['bootstrap'] = [SHAPES_PATH + '/mxBootstrap.js', STENCIL_PATH + '/bootstrap.xml'];
+	mxStencilRegistry.libraries['bootstrap'] = [SHAPES_PATH + '/mxBootstrap.js', SHAPES_PATH + '/mxBasic.js', STENCIL_PATH + '/bootstrap.xml'];
 	mxStencilRegistry.libraries['gmdl'] = [SHAPES_PATH + '/mxGmdl.js', STENCIL_PATH + '/gmdl.xml'];
 	mxStencilRegistry.libraries['gcp2'] = [SHAPES_PATH + '/mxGCP2.js', STENCIL_PATH + '/gcp2.xml'];
+	mxStencilRegistry.libraries['ibm'] = [SHAPES_PATH + '/mxIBM.js', STENCIL_PATH + '/ibm.xml'];
 	mxStencilRegistry.libraries['cabinets'] = [SHAPES_PATH + '/mxCabinets.js', STENCIL_PATH + '/cabinets.xml'];
 	mxStencilRegistry.libraries['archimate'] = [SHAPES_PATH + '/mxArchiMate.js'];
 	mxStencilRegistry.libraries['archimate3'] = [SHAPES_PATH + '/mxArchiMate3.js'];
@@ -4685,6 +5036,7 @@
 	mxStencilRegistry.libraries['aws4'] = [SHAPES_PATH + '/mxAWS4.js', STENCIL_PATH + '/aws4.xml'];
 	mxStencilRegistry.libraries['aws4b'] = [SHAPES_PATH + '/mxAWS4.js', STENCIL_PATH + '/aws4.xml'];
 	mxStencilRegistry.libraries['veeam'] = [STENCIL_PATH + '/veeam/2d.xml', STENCIL_PATH + '/veeam/3d.xml', STENCIL_PATH + '/veeam/veeam.xml'];
+	mxStencilRegistry.libraries['veeam2'] = [STENCIL_PATH + '/veeam/2d.xml', STENCIL_PATH + '/veeam/3d.xml', STENCIL_PATH + '/veeam/veeam2.xml'];
 	mxStencilRegistry.libraries['pid2inst'] = [SHAPES_PATH + '/pid2/mxPidInstruments.js'];
 	mxStencilRegistry.libraries['pid2misc'] = [SHAPES_PATH + '/pid2/mxPidMisc.js', STENCIL_PATH + '/pid/misc.xml'];
 	mxStencilRegistry.libraries['pid2valves'] = [SHAPES_PATH + '/pid2/mxPidValves.js'];
@@ -5084,6 +5436,29 @@
 							doc.writeln(editorUi.editor.fontCss);
 							doc.writeln('</style>');
 						}
+						
+						if (thisGraph.extFonts != null)
+						{
+							for (var i = 0; i < thisGraph.extFonts.length; i++)
+							{
+								var fontName = thisGraph.extFonts[i].name;
+								var fontUrl = thisGraph.extFonts[i].url;
+								
+								if (fontUrl.indexOf(Editor.GOOGLE_FONTS) == 0)
+								{
+							   		doc.writeln('<link rel="stylesheet" href="' + fontUrl + '" charset="UTF-8" type="text/css">');
+								}
+								else
+								{
+							   		doc.writeln('<style type="text/css">');
+							   		doc.writeln('@font-face {\n' +
+								            '\tfont-family: "'+ fontName +'";\n' + 
+								            '\tsrc: url("'+ fontUrl +'");\n' + 
+								            '}');
+							   		doc.writeln('</style>');
+								}
+							}
+						}
 					};
 					
 					if (typeof(MathJax) !== 'undefined')
@@ -5094,8 +5469,8 @@
 						pv.renderPage = function(w, h, dx, dy, content, pageNumber)
 						{
 							var prev = mxClient.NO_FO;
-							mxClient.NO_FO = (this.graph.mathEnabled && !this.useForeignObjectForMath) ?
-									true : this.originalNoForeignObject;
+							mxClient.NO_FO = (this.graph.mathEnabled && !editorUi.editor.useForeignObjectForMath) ?
+								true : editorUi.editor.originalNoForeignObject;
 							
 							var result = printPreviewRenderPage.apply(this, arguments);
 
@@ -5146,6 +5521,29 @@
 					pv.backgroundColor = bg;
 					pv.autoOrigin = autoOrigin;
 					pv.appendGraph(thisGraph, scale, x0, y0, forcePageBreaks, true);
+					
+					if (thisGraph.extFonts != null && pv.wnd != null)
+					{
+						for (var i = 0; i < thisGraph.extFonts.length; i++)
+						{
+							var fontName = thisGraph.extFonts[i].name;
+							var fontUrl = thisGraph.extFonts[i].url;
+							
+							if (fontUrl.indexOf(Editor.GOOGLE_FONTS) == 0)
+							{
+						   		pv.wnd.document.writeln('<link rel="stylesheet" href="' + fontUrl + '" charset="UTF-8" type="text/css">');
+							}
+							else
+							{
+						   		pv.wnd.document.writeln('<style type="text/css">');
+						   		pv.wnd.document.writeln('@font-face {\n' +
+							            '\tfont-family: "'+ fontName +'";\n' + 
+							            '\tsrc: url("'+ fontUrl +'");\n' + 
+							            '}');
+						   		pv.wnd.document.writeln('</style>');
+							}
+						}
+					}
 				}
 				
 				// Restores state if css transforms are used
@@ -5214,6 +5612,7 @@
 							mathEnabled = page.viewState.mathEnabled;
 							bg = page.viewState.background;
 							bgImage = page.viewState.backgroundImage;
+							tempGraph.extFonts = page.viewState.extFonts;
 						}
 					
 						tempGraph.background = bg;
